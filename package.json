@@ -1,0 +1,20 @@
+{
+  "name": "mf-scraper",
+  "version": "1.0.0",
+  "description": "MoneyForward ME → Google Sheets scraper",
+  "main": "src/scraper.js",
+  "scripts": {
+    "login":    "node src/login.js",
+    "start":    "node src/scraper.js",
+    "dry-run":  "node src/scraper.js --dry-run --save-csv",
+    "import":   "node src/scraper.js --save-csv"
+  },
+  "dependencies": {
+    "dotenv":     "^16.4.5",
+    "googleapis": "^144.0.0",
+    "playwright": "^1.44.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
