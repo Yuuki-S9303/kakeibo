@@ -235,12 +235,12 @@ async function scrapeMFTransactions(page) {
 }
 
 // ============================================================
-// MoneyForward ME 資産スクレイピング（/bs ページ）
+// MoneyForward ME 資産スクレイピング（/accounts ページ）
 // ============================================================
 async function scrapeMFAssets(page) {
   console.log(`[${now()}] 資産ページ取得中...`);
-  await page.goto(`${MF_BASE}/bs`, { waitUntil: 'networkidle' });
-  await screenshot(page, 'bs_assets');
+  await page.goto(`${MF_BASE}/accounts`, { waitUntil: 'networkidle' });
+  await screenshot(page, 'accounts_assets');
 
   const today   = new Date();
   const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
@@ -248,61 +248,46 @@ async function scrapeMFAssets(page) {
   const rawAssets = await page.evaluate(() => {
     const results = [];
 
-    // MF の /bs ページでは口座ごとに行が並ぶ
-    // .bs-account-group または .account-box-row が口座単位の行
-    // ない場合は .total-box などのサマリー行にフォールバック
+    // MF /accounts ページの構造:
+    //   <table id="account-table">
+    //     <tr><th class="service">金融機関</th><th class="asset">資産</th>...</tr>  ← ヘッダー
+    //     <tr id="[hash]"><td><a>口座名</a></td><td class="asset">残高</td>...</tr>  ← データ行
+    //   </table>
+    //
+    // データ行だけ取るため id 属性付きの tr を対象にする
 
-    // 戦略1: 口座ごとの残高行（最も詳細）
-    const accountRows = document.querySelectorAll(
-      'table.bs-table tbody tr, .account-list-row, [class*="account-row"]'
-    );
+    const rows = document.querySelectorAll('#account-table tr[id]');
 
-    if (accountRows.length > 0) {
-      accountRows.forEach(row => {
-        const cells = row.querySelectorAll('td');
-        if (cells.length < 2) return;
+    rows.forEach(row => {
+      const nameEl   = row.querySelector('td:first-child a');
+      // 資産列: td.asset があればそれ、なければ2列目
+      const assetTd  = row.querySelector('td.asset') || row.querySelector('td:nth-child(2)');
+      if (!nameEl || !assetTd) return;
 
-        const name      = cells[0]?.textContent.trim().replace(/\s+/g, ' ');
-        const amountTxt = cells[cells.length - 1]?.textContent.trim();
-        if (!name || !amountTxt) return;
+      const name      = nameEl.textContent.trim().replace(/\s+/g, ' ');
+      const amountTxt = assetTd.textContent.trim();
+      if (!name || !amountTxt) return;
 
-        // 「合計」などの集計行はスキップ
-        if (name.includes('合計') || name.includes('小計')) return;
+      const amount = parseInt(amountTxt.replace(/[^\-\d]/g, ''), 10);
+      if (isNaN(amount)) return;
 
-        const amount = parseInt(amountTxt.replace(/[^\-\d]/g, ''), 10);
-        if (isNaN(amount)) return;
+      results.push({ type: name, amount });
+    });
 
-        results.push({ type: name, amount });
-      });
-    }
-
-    // 戦略2: テーブルがなければ dl/dt/dd 形式やリスト形式を試みる
-    if (results.length === 0) {
-      document.querySelectorAll('.bs-total-row, .total-row, [class*="bs-item"]').forEach(el => {
-        const label  = el.querySelector('.account-name, .name, dt, .label')?.textContent.trim().replace(/\s+/g, ' ');
-        const amount = el.querySelector('.amount, .total, dd, .value')?.textContent.trim();
-        if (!label || !amount) return;
-        if (label.includes('合計') || label.includes('小計')) return;
-
-        const parsed = parseInt(amount.replace(/[^\-\d]/g, ''), 10);
-        if (!isNaN(parsed)) results.push({ type: label, amount: parsed });
-      });
-    }
-
-    // デバッグ用: ページの主要HTML構造をログ
-    const bodyPreview = document.body.innerHTML.slice(0, 3000);
+    const bodyPreview = document.body.innerHTML.slice(0, 4000);
     return { results, bodyPreview };
   });
 
-  // デバッグ: ページ構造をログ出力
   if (DEBUG || rawAssets.results.length === 0) {
-    console.log(`[DEBUG] /bs ページHTML先頭3000文字:\n${rawAssets.bodyPreview}`);
+    console.log(`[DEBUG] /accounts ページHTML先頭4000文字:\n${rawAssets.bodyPreview}`);
   }
 
   if (rawAssets.results.length === 0) {
     console.warn(`[WARN] 資産データが取得できませんでした。--debug フラグで構造を確認してください。`);
     return [];
   }
+
+  console.log(`[${now()}] 取得口座: ${rawAssets.results.map(r => r.type).join(', ')}`);
 
   return rawAssets.results.map(r => ({
     id:         generateId(),
