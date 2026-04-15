@@ -35,6 +35,9 @@ const SHEETS = {
 // 現金残高が急減したと判断する閾値（円）
 const CASH_DROP_THRESHOLD = 5000;
 
+// 直前メッセージの登録追跡（取消機能用・実行スコープ内のみ有効）
+let _batchRegistrations = []; // [{ sheetName, id, label }]
+
 // ============================================================
 // LINE Webhook エントリーポイント
 // ============================================================
@@ -100,10 +103,19 @@ function handleEvent(event) {
 function handleTextMessage(replyToken, userId, text) {
   const lines = text.split('\n').map(l => l.trim()).filter(l => l);
   const replies = [];
+  _batchRegistrations = []; // リセット
 
   for (const line of lines) {
     const reply = processLine(userId, line);
     if (reply) replies.push(reply);
+  }
+
+  // 登録があった場合、直前バッチをScript Propertiesに保存（取消用）
+  if (_batchRegistrations.length > 0) {
+    PropertiesService.getScriptProperties().setProperty(
+      `LAST_BATCH_${userId}`,
+      JSON.stringify(_batchRegistrations)
+    );
   }
 
   if (replies.length === 0) return; // 認識できない入力は無視（LINE無料枠節約）
@@ -164,7 +176,10 @@ function processLine(userId, text) {
   const expenseMatch = text.match(/^-?([\d,]+)\s+(.+)/);
   if (expenseMatch) return handleManualExpense(parseAmount(expenseMatch[1]), expenseMatch[2].trim(), '');
 
-  // 6. ヘルプ
+  // 6. 取消（直前メッセージの登録を全削除）
+  if (/^(取消|取り消し|cancel)$/i.test(text)) return handleCancel(userId);
+
+  // 7. ヘルプ
   if (/^(help|ヘルプ|使い方)$/i.test(text)) return getHelpText();
 
   return null; // 認識できない行は無視
@@ -188,10 +203,11 @@ function handleCashBalance(newBalance) {
   // 差分を現金支出として transactions に登録
   if (diff !== null && diff < 0) {
     const txSheet = ss.getSheetByName(SHEETS.TRANSACTIONS);
+    const txId = generateId();
     txSheet.appendRow([
-      generateId(),
+      txId,
       formatDate(now),
-      Math.abs(diff),    // amount（正の数で記録）
+      Math.abs(diff),
       'expense',
       '現金支出',
       '',
@@ -201,6 +217,11 @@ function handleCashBalance(newBalance) {
       '',
       nowJSTString(),
     ]);
+    _batchRegistrations.push({
+      sheetName: SHEETS.TRANSACTIONS,
+      id: txId,
+      label: `現金支出 ¥${Math.abs(diff).toLocaleString()}（残高差分）`,
+    });
   }
 
   // 返信メッセージ組み立て
@@ -234,9 +255,10 @@ function handleManualExpense(amount, memo, category) {
   const ss    = openSpreadsheet();
   const sheet = ss.getSheetByName(SHEETS.TRANSACTIONS);
   const now   = new Date();
+  const id    = generateId();
 
   sheet.appendRow([
-    generateId(),
+    id,
     formatDate(now),
     amount,
     'expense',
@@ -248,6 +270,12 @@ function handleManualExpense(amount, memo, category) {
     '',
     nowJSTString(),
   ]);
+
+  _batchRegistrations.push({
+    sheetName: SHEETS.TRANSACTIONS,
+    id,
+    label: `${category || '支出'} ¥${amount.toLocaleString()}${memo ? ' ' + memo : ''}`,
+  });
 
   let reply = `支出を登録しました。\nカテゴリ: ${category || '未設定'}\n金額: ¥${amount.toLocaleString()}`;
   if (memo) reply += `\nメモ: ${memo}`;
@@ -272,9 +300,10 @@ function handleIncome(amount, memo, category) {
   const ss    = openSpreadsheet();
   const sheet = ss.getSheetByName(SHEETS.TRANSACTIONS);
   const now   = new Date();
+  const id    = generateId();
 
   sheet.appendRow([
-    generateId(),
+    id,
     formatDate(now),
     amount,
     'income',
@@ -287,6 +316,12 @@ function handleIncome(amount, memo, category) {
     nowJSTString(),
   ]);
 
+  _batchRegistrations.push({
+    sheetName: SHEETS.TRANSACTIONS,
+    id,
+    label: `${memo || category || '収入'} ¥${amount.toLocaleString()}`,
+  });
+
   return `収入を登録しました ✅\n金額: ¥${amount.toLocaleString()}\nメモ: ${memo || category || '収入'}`;
 }
 
@@ -297,9 +332,10 @@ function handleAssetRecord(assetType, amount) {
   const ss    = openSpreadsheet();
   const sheet = ss.getSheetByName(SHEETS.ASSETS);
   const now   = new Date();
+  const id    = generateId();
 
   sheet.appendRow([
-    generateId(),
+    id,
     formatDate(now),
     assetType,
     amount,
@@ -307,7 +343,63 @@ function handleAssetRecord(assetType, amount) {
     nowJSTString(),
   ]);
 
+  _batchRegistrations.push({
+    sheetName: SHEETS.ASSETS,
+    id,
+    label: `資産 ${assetType} ¥${amount.toLocaleString()}`,
+  });
+
   return `資産を記録しました。\n種類: ${assetType}\n金額: ¥${amount.toLocaleString()}`;
+}
+
+// ============================================================
+// 取消（直前メッセージの登録を全削除）
+// ============================================================
+function handleCancel(userId) {
+  const props   = PropertiesService.getScriptProperties();
+  const key     = `LAST_BATCH_${userId}`;
+  const stored  = props.getProperty(key);
+
+  if (!stored) return '取り消せる登録がありません。';
+
+  let batch;
+  try {
+    batch = JSON.parse(stored);
+  } catch (e) {
+    return '取り消しデータの読み込みに失敗しました。';
+  }
+
+  if (!batch || batch.length === 0) return '取り消せる登録がありません。';
+
+  const ss = openSpreadsheet();
+
+  // シートごとに対象IDをまとめて削除（下の行から削除して行ズレ防止）
+  const bySheet = {};
+  batch.forEach(item => {
+    if (!bySheet[item.sheetName]) bySheet[item.sheetName] = [];
+    bySheet[item.sheetName].push(item.id);
+  });
+
+  for (const [sheetName, ids] of Object.entries(bySheet)) {
+    const sheet   = ss.getSheetByName(sheetName);
+    if (!sheet) continue;
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) continue;
+
+    const idValues = sheet.getRange(2, 1, lastRow - 1, 1).getValues().map(r => r[0]);
+    // 削除対象の行インデックスを収集（下から削除するため降順）
+    const rowsToDelete = [];
+    idValues.forEach((id, i) => {
+      if (ids.includes(String(id))) rowsToDelete.push(i + 2); // 1始まり + ヘッダー分
+    });
+    rowsToDelete.sort((a, b) => b - a).forEach(row => sheet.deleteRow(row));
+  }
+
+  // 保存済みバッチを削除（二重取消防止）
+  props.deleteProperty(key);
+
+  const labels = batch.map(item => `・${item.label}`).join('\n');
+  return `取り消しました ✅\n${labels}`;
 }
 
 // ============================================================
