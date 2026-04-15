@@ -97,9 +97,6 @@ function handleEvent(event) {
 // テキストメッセージ処理
 // ============================================================
 function handleTextMessage(replyToken, userId, text) {
-  // 0. 予算関連コマンド（budget_planner.gs）
-  if (handleBudgetCommand(replyToken, text)) return;
-
   // 1. 残高記録: 「残高 ¥8000」「残高8000」「balance 8000」
   const balanceMatch = text.match(/^(?:残高|balance)\s*[¥￥]?\s*([\d,]+)/i);
   if (balanceMatch) {
@@ -521,11 +518,6 @@ function getHelpText() {
     '',
     'カテゴリの設定はLIFFアプリで行えます。',
     '',
-    '💰 予算管理:',
-    '  月収 280000',
-    '  貯金目標 50000',
-    '  調整 +12000  ← 残業・精算など',
-    '  予算提案',
   ].join('\n');
 }
 
