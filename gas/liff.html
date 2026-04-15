@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>家計管理</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: #f0f2f5;
+      color: #222;
+      min-height: 100vh;
+      font-size: 54px;
+    }
+
+    /* ナビゲーション */
+    .nav {
+      background: #fff;
+      border-bottom: 3px solid #e0e0e0;
+      display: flex;
+      overflow-x: auto;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .nav-item {
+      flex: 1;
+      padding: 54px 24px;
+      font-size: 48px;
+      color: #888;
+      cursor: pointer;
+      border-bottom: 9px solid transparent;
+      white-space: nowrap;
+      text-align: center;
+      font-weight: 500;
+    }
+    .nav-item.active {
+      color: #06C755;
+      border-bottom-color: #06C755;
+      font-weight: bold;
+    }
+
+    /* コンテンツエリア */
+    .content { padding: 48px; }
+    .page { display: none; }
+    .page.active { display: block; }
+
+    /* 月セレクター */
+    .month-selector {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 40px;
+      margin-bottom: 60px;
+      background: #fff;
+      border-radius: 32px;
+      padding: 32px 40px;
+      box-shadow: 0 3px 12px rgba(0,0,0,0.08);
+    }
+    .month-selector button {
+      background: #f0f2f5;
+      border: none;
+      border-radius: 50%;
+      width: 104px;
+      height: 104px;
+      font-size: 56px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #444;
+    }
+    .month-selector span {
+      font-size: 48px;
+      font-weight: bold;
+      min-width: 280px;
+      text-align: center;
+      color: #222;
+    }
+
+    /* サマリーカード */
+    .summary-cards {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 36px;
+      margin-bottom: 48px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 48px;
+      padding: 48px 24px;
+      box-shadow: 0 3px 12px rgba(0,0,0,0.08);
+    }
+    .card.full { grid-column: 1 / -1; }
+    .card-label {
+      font-size: 36px;
+      color: #999;
+      margin-bottom: 20px;
+      font-weight: 500;
+    }
+    .card-value {
+      font-size: 13vw;
+      font-weight: bold;
+      letter-spacing: -2px;
+      word-break: break-all;
+    }
+    .card-value.income  { color: #06C755; }
+    .card-value.expense { color: #FF4F4F; }
+    .card-value.saving  { color: #3D7EFF; }
+
+    /* カテゴリ別支出行 */
+    .category-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 48px 0;
+      border-bottom: 3px solid #f0f0f0;
+      font-size: 51px;
+    }
+    .category-row:last-child { border-bottom: none; }
+    .category-row span:last-child { font-weight: bold; }
+
+    /* 予算バー */
+    .budget-item {
+      background: #fff;
+      border-radius: 48px;
+      padding: 60px;
+      margin-bottom: 36px;
+      box-shadow: 0 3px 12px rgba(0,0,0,0.08);
+    }
+    .budget-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 36px;
+    }
+    .budget-category {
+      font-size: 54px;
+      font-weight: bold;
+    }
+    .budget-remaining {
+      font-size: 48px;
+      color: #666;
+    }
+    .budget-remaining.over { color: #FF4F4F; font-weight: bold; }
+    .progress-bar {
+      height: 42px;
+      background: #f0f0f0;
+      border-radius: 21px;
+      overflow: hidden;
+    }
+    .progress-fill {
+      height: 100%;
+      border-radius: 21px;
+      background: #06C755;
+      transition: width 0.5s;
+    }
+    .progress-fill.warning { background: #FFA500; }
+    .progress-fill.over    { background: #FF4F4F; }
+    .budget-amounts {
+      display: flex;
+      justify-content: space-between;
+      font-size: 45px;
+      color: #999;
+      margin-top: 24px;
+    }
+
+    /* グラフエリア */
+    .chart-card {
+      background: #fff;
+      border-radius: 48px;
+      padding: 60px 48px;
+      margin-bottom: 48px;
+      box-shadow: 0 3px 12px rgba(0,0,0,0.08);
+    }
+    .chart-title {
+      font-size: 51px;
+      font-weight: bold;
+      color: #444;
+      margin-bottom: 48px;
+    }
+
+    /* 資産 */
+    .asset-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 54px 0;
+      border-bottom: 3px solid #f0f0f0;
+      font-size: 51px;
+    }
+    .asset-row:last-child { border-bottom: none; }
+    .asset-row span:last-child { font-weight: bold; }
+
+    /* ローディング */
+    .loading {
+      text-align: center;
+      padding: 144px 60px;
+      color: #aaa;
+      font-size: 45px;
+    }
+
+    /* 金額マスク（JSで制御） */
+
+    /* 表示トグルボタン */
+    .toggle-btn {
+      background: none;
+      border: none;
+      font-size: 42px;
+      cursor: pointer;
+      padding: 18px 16px;
+      color: #888;
+    }
+
+    /* エラー */
+    .error {
+      background: #FFF0F0;
+      border: 3px solid #FFD0D0;
+      border-radius: 36px;
+      padding: 48px;
+      color: #CC0000;
+      font-size: 42px;
+      margin-bottom: 36px;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ナビゲーション -->
+<nav class="nav">
+  <div class="nav-item active" onclick="showPage('summary', this)">📊 収支</div>
+  <div class="nav-item" onclick="showPage('budget', this)">💰 予算</div>
+  <div class="nav-item" onclick="showPage('trend', this)">📈 推移</div>
+  <div class="nav-item" onclick="showPage('assets', this)">🏦 資産</div>
+  <button class="toggle-btn" id="toggleBtn" onclick="toggleAmounts()">🙈</button>
+</nav>
+
+<div class="content">
+
+  <!-- 月セレクター（収支・予算ページ共通） -->
+  <div class="month-selector" id="monthSelector">
+    <button onclick="changeMonth(-1)">‹</button>
+    <span id="monthLabel"></span>
+    <button onclick="changeMonth(1)">›</button>
+  </div>
+
+  <!-- 収支サマリーページ -->
+  <div class="page active" id="page-summary">
+    <div id="summaryContent"><div class="loading">読み込み中...</div></div>
+  </div>
+
+  <!-- 予算残高ページ -->
+  <div class="page" id="page-budget">
+    <div id="budgetContent"><div class="loading">読み込み中...</div></div>
+  </div>
+
+  <!-- 貯蓄推移ページ -->
+  <div class="page" id="page-trend">
+    <div class="chart-card">
+      <div class="chart-title">貯蓄額の月次推移（直近12ヶ月）</div>
+      <canvas id="trendChart"></canvas>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">収入・支出の推移</div>
+      <canvas id="incomeExpenseChart"></canvas>
+    </div>
+  </div>
+
+  <!-- 資産推移ページ -->
+  <div class="page" id="page-assets">
+    <div id="assetsContent"><div class="loading">読み込み中...</div></div>
+  </div>
+
+</div>
+
+<script>
+// ============================================================
+// 設定
+// ============================================================
+const LIFF_ID  = '2009696996-oWmXdu5w';
+const GAS_URL  = '<?= ScriptApp.getService().getUrl() ?>';
+
+let currentYear  = new Date().getFullYear();
+let currentMonth = new Date().getMonth() + 1;
+let trendChart, incomeExpenseChart, assetsTotalChart, assetsTypeChart;
+
+// ============================================================
+// 初期化
+// ============================================================
+let amountsHidden = true;
+
+function applyAmountMask() {
+  document.querySelectorAll('.amount').forEach(el => {
+    if (amountsHidden) {
+      if (!el.dataset.original) el.dataset.original = el.textContent;
+      el.textContent = '******';
+    } else {
+      if (el.dataset.original) {
+        el.textContent = el.dataset.original;
+        delete el.dataset.original;
+      }
+    }
+  });
+}
+
+function toggleAmounts() {
+  amountsHidden = !amountsHidden;
+  document.getElementById('toggleBtn').textContent = amountsHidden ? '🙈' : '👁';
+  applyAmountMask();
+}
+
+async function init() {
+  liff.init({ liffId: LIFF_ID }).catch(e => {
+    console.warn('LIFF init error:', e);
+  });
+  updateMonthLabel();
+  loadSummary();
+}
+
+// ============================================================
+// ナビゲーション
+// ============================================================
+function showPage(page, el) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('page-' + page).classList.add('active');
+  el.classList.add('active');
+
+  const monthSelector = document.getElementById('monthSelector');
+  monthSelector.style.display = (page === 'summary' || page === 'budget') ? 'flex' : 'none';
+
+  if (page === 'summary') loadSummary();
+  if (page === 'budget')  loadBudget();
+  if (page === 'trend')   loadTrend();
+  if (page === 'assets')  loadAssets();
+}
+
+// ============================================================
+// 月操作
+// ============================================================
+function updateMonthLabel() {
+  document.getElementById('monthLabel').textContent =
+    `${currentYear}年${currentMonth}月`;
+}
+
+function changeMonth(delta) {
+  currentMonth += delta;
+  if (currentMonth > 12) { currentMonth = 1;  currentYear++; }
+  if (currentMonth < 1)  { currentMonth = 12; currentYear--; }
+  updateMonthLabel();
+  const activePage = document.querySelector('.page.active').id.replace('page-', '');
+  if (activePage === 'summary') loadSummary();
+  if (activePage === 'budget')  loadBudget();
+}
+
+// ============================================================
+// API呼び出し
+// ============================================================
+async function fetchApi(action, params = {}) {
+  const url = new URL(GAS_URL);
+  url.searchParams.set('action', action);
+  Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  const res  = await fetch(url.toString());
+  return res.json();
+}
+
+// ============================================================
+// 収支サマリー
+// ============================================================
+async function loadSummary() {
+  const el = document.getElementById('summaryContent');
+  el.innerHTML = '<div class="loading">読み込み中...</div>';
+  try {
+    const data = await fetchApi('monthly_summary', { year: currentYear, month: currentMonth });
+    el.innerHTML = renderSummary(data);
+    applyAmountMask();
+  } catch (e) {
+    el.innerHTML = `<div class="error">データの取得に失敗しました</div>`;
+  }
+}
+
+function renderSummary(data) {
+  const savingColor = data.saving >= 0 ? 'saving' : 'expense';
+  const cats = Object.entries(data.byCategory)
+    .sort((a, b) => b[1] - a[1])
+    .map(([cat, amt]) => `
+      <div class="category-row">
+        <span>${cat}</span>
+        <span class="amount">¥${amt.toLocaleString()}</span>
+      </div>`).join('');
+
+  return `
+    <div class="summary-cards">
+      <div class="card">
+        <div class="card-label">収入</div>
+        <div class="card-value income amount">¥${data.income.toLocaleString()}</div>
+      </div>
+      <div class="card">
+        <div class="card-label">支出</div>
+        <div class="card-value expense amount">¥${data.expense.toLocaleString()}</div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-label" style="margin-bottom:12px;">カテゴリ別支出</div>
+      ${cats || '<div style="color:#aaa;font-size:15px;text-align:center;padding:16px 0;">データなし</div>'}
+    </div>`;
+}
+
+// ============================================================
+// 予算残高
+// ============================================================
+async function loadBudget() {
+  const el = document.getElementById('budgetContent');
+  el.innerHTML = '<div class="loading">読み込み中...</div>';
+  try {
+    const data = await fetchApi('budget_status', { year: currentYear, month: currentMonth });
+    el.innerHTML = renderBudget(data);
+    applyAmountMask();
+  } catch (e) {
+    el.innerHTML = `<div class="error">データの取得に失敗しました</div>`;
+  }
+}
+
+function renderBudget(data) {
+  if (!data.items || data.items.length === 0) {
+    return '<div class="card"><div style="color:#aaa;font-size:15px;text-align:center;padding:24px;">予算が設定されていません</div></div>';
+  }
+
+  return data.items.map(item => {
+    const rate      = item.rate !== null ? Math.min(item.rate, 100) : 0;
+    const fillClass = item.rate > 100 ? 'over' : item.rate > 80 ? 'warning' : '';
+    const remClass  = item.remaining < 0 ? 'over' : '';
+    const remText   = item.remaining < 0
+      ? `<span class="amount">¥${Math.abs(item.remaining).toLocaleString()}</span> オーバー`
+      : `残り <span class="amount">¥${item.remaining.toLocaleString()}</span>`;
+
+    return `
+      <div class="budget-item">
+        <div class="budget-header">
+          <span class="budget-category">${item.category}</span>
+          <span class="budget-remaining ${remClass}">${remText}</span>
+        </div>
+        <div class="progress-bar">
+          <div class="progress-fill ${fillClass}" style="width:${rate}%"></div>
+        </div>
+        <div class="budget-amounts">
+          <span><span class="amount">¥${item.actual.toLocaleString()}</span> 使用</span>
+          <span>予算 <span class="amount">¥${item.budget.toLocaleString()}</span></span>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// ============================================================
+// 貯蓄推移
+// ============================================================
+async function loadTrend() {
+  if (trendChart) return;
+  try {
+    const data = await fetchApi('savings_trend');
+
+    trendChart = new Chart(document.getElementById('trendChart'), {
+      type: 'bar',
+      data: {
+        labels: data.labels,
+        datasets: [{
+          label: '貯蓄額',
+          data: data.saving,
+          backgroundColor: data.saving.map(v => v >= 0 ? 'rgba(6,199,85,0.7)' : 'rgba(255,79,79,0.7)'),
+          borderRadius: 6,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: {
+          y: {
+            ticks: {
+              font: { size: 13 },
+              callback: v => '¥' + (v/10000).toFixed(0) + '万'
+            }
+          },
+          x: { ticks: { font: { size: 12 } } }
+        }
+      }
+    });
+
+    incomeExpenseChart = new Chart(document.getElementById('incomeExpenseChart'), {
+      type: 'line',
+      data: {
+        labels: data.labels,
+        datasets: [
+          {
+            label: '収入',
+            data: data.income,
+            borderColor: '#06C755',
+            backgroundColor: 'rgba(6,199,85,0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 4,
+          },
+          {
+            label: '支出',
+            data: data.expense,
+            borderColor: '#FF4F4F',
+            backgroundColor: 'rgba(255,79,79,0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 4,
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: {
+            labels: { font: { size: 13 }, boxWidth: 12 }
+          }
+        },
+        scales: {
+          y: {
+            ticks: {
+              font: { size: 13 },
+              callback: v => '¥' + (v/10000).toFixed(0) + '万'
+            }
+          },
+          x: { ticks: { font: { size: 12 } } }
+        }
+      }
+    });
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// ============================================================
+// 資産推移
+// ============================================================
+async function loadAssets() {
+  if (assetsTotalChart) return;
+  const el = document.getElementById('assetsContent');
+  el.innerHTML = '<div class="loading">読み込み中...</div>';
+  try {
+    const data = await fetchApi('assets_trend');
+    const processed = processAssetsData(data.records);
+    if (!processed) {
+      el.innerHTML = '<div class="card"><div style="color:#aaa;font-size:51px;text-align:center;padding:54px 0;">資産データがありません</div></div>';
+      return;
+    }
+    el.innerHTML = renderAssetsHtml(processed);
+    applyAmountMask();
+    setTimeout(() => initAssetCharts(processed), 0);
+  } catch (e) {
+    el.innerHTML = `<div class="error">データの取得に失敗しました</div>`;
+  }
+}
+
+function processAssetsData(records) {
+  if (!records || records.length === 0) return null;
+
+  // 種別ごとの最新値・最終更新日
+  const latest = {};
+  const latestDates = {};
+  for (const r of records) {
+    latest[r.type] = r.amount;
+    latestDates[r.type] = r.date;
+  }
+
+  // グラフ用種別（「元本」で終わる種別は除外）
+  const assetTypes = [...new Set(records.map(r => r.type))].filter(t => !t.endsWith('元本'));
+
+  // 直近12ヶ月ラベル
+  const months = [];
+  const now = new Date();
+  for (let i = 11; i >= 0; i--) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  }
+
+  // 月×種別マップ
+  const monthTypeMap = {};
+  for (const r of records) {
+    const month = r.date.slice(0, 7);
+    if (!monthTypeMap[month]) monthTypeMap[month] = {};
+    monthTypeMap[month][r.type] = r.amount;
+  }
+
+  // 繰り越しで月次データ補完
+  const carryForward = {};
+  const monthlyData = months.map(month => {
+    if (monthTypeMap[month]) Object.assign(carryForward, monthTypeMap[month]);
+    const byType = { ...carryForward };
+    const total = assetTypes.reduce((sum, t) => sum + (byType[t] || 0), 0);
+    return { month, byType, total };
+  });
+
+  return { latest, latestDates, assetTypes, monthlyData };
+}
+
+function renderAssetsHtml(p) {
+  const { latest, latestDates, assetTypes } = p;
+
+  // 元本ペアあり（証券）となし（銀行・現金等）に分類
+  const secTypes     = assetTypes.filter(t => latest[t + '元本'] !== undefined);
+  const regularTypes = assetTypes.filter(t => latest[t + '元本'] === undefined);
+
+  // 純資産合計: 元本ベース
+  const totalCost = regularTypes.reduce((s, t) => s + (latest[t] || 0), 0)
+                  + secTypes.reduce((s, t) => s + (latest[t + '元本'] || 0), 0);
+  // 損益合計
+  const totalProfit = secTypes.reduce((s, t) => s + (latest[t] || 0) - (latest[t + '元本'] || 0), 0);
+  const profitSign  = totalProfit >= 0 ? '+' : '';
+  const profitColor = totalProfit >= 0 ? '#06C755' : '#FF4F4F';
+
+  const dateLabel = t => latestDates[t]
+    ? `<div style="font-size:33px;color:#bbb;margin-top:6px;">${latestDates[t]}</div>`
+    : '';
+
+  // 通常種別行
+  const regularRows = regularTypes.map(t => `
+    <div class="asset-row" style="align-items:flex-start;">
+      <div><span>${t}</span>${dateLabel(t)}</div>
+      <span class="amount">¥${(latest[t] || 0).toLocaleString()}</span>
+    </div>`).join('');
+
+  // 証券種別行（元本行＋損益行）
+  const secRows = secTypes.map(t => {
+    const principal = latest[t + '元本'] || 0;
+    const profit    = (latest[t] || 0) - principal;
+    const sign      = profit >= 0 ? '+' : '';
+    const color     = profit >= 0 ? '#06C755' : '#FF4F4F';
+    return `
+      <div class="asset-row" style="align-items:flex-start;">
+        <div><span>${t}元本</span>${dateLabel(t + '元本')}</div>
+        <span class="amount">¥${principal.toLocaleString()}</span>
+      </div>
+      <div class="asset-row">
+        <span>${t}損益</span>
+        <span class="amount" style="color:${color};">${sign}¥${profit.toLocaleString()}</span>
+      </div>`;
+  }).join('');
+
+  return `
+    <div class="card" style="margin-bottom:36px;">
+      <div class="card-label">純資産合計</div>
+      <div class="card-value saving amount">¥${totalCost.toLocaleString()}</div>
+      <div style="font-size:39px;color:${profitColor};margin-top:16px;">(<span class="amount">¥${(totalCost + totalProfit).toLocaleString()}</span>)</div>
+    </div>
+    <div class="card" style="margin-bottom:36px;">
+      <div class="card-label" style="margin-bottom:24px;">種別内訳（最新）</div>
+      ${regularRows}
+      ${secRows}
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">全資産推移（直近12ヶ月）</div>
+      <canvas id="assetsTotalChart"></canvas>
+    </div>
+    <div class="chart-card">
+      <div class="chart-title">種別別推移</div>
+      <canvas id="assetsTypeChart"></canvas>
+    </div>`;
+}
+
+const TYPE_COLORS = { '銀行': '#3D7EFF', 'NISA': '#06C755', '現金': '#FFA500' };
+const FALLBACK_COLORS = ['#9B59B6','#E74C3C','#1ABC9C','#F39C12'];
+function getTypeColor(type, idx) {
+  return TYPE_COLORS[type] || FALLBACK_COLORS[idx % FALLBACK_COLORS.length];
+}
+
+function initAssetCharts(p) {
+  const { assetTypes, monthlyData } = p;
+  const labels = monthlyData.map(d => d.month);
+  const chartOpts = v => '¥' + (v / 10000).toFixed(0) + '万';
+
+  assetsTotalChart = new Chart(document.getElementById('assetsTotalChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: '純資産',
+        data: monthlyData.map(d => d.total),
+        borderColor: '#3D7EFF',
+        backgroundColor: 'rgba(61,126,255,0.1)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 4,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        y: { ticks: { font: { size: 13 }, callback: chartOpts } },
+        x: { ticks: { font: { size: 12 } } }
+      }
+    }
+  });
+
+  assetsTypeChart = new Chart(document.getElementById('assetsTypeChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: assetTypes.map((type, idx) => ({
+        label: type,
+        data: monthlyData.map(d => d.byType[type] || 0),
+        borderColor: getTypeColor(type, idx),
+        backgroundColor: 'transparent',
+        tension: 0.3,
+        pointRadius: 4,
+      }))
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { labels: { font: { size: 13 }, boxWidth: 12 } } },
+      scales: {
+        y: { ticks: { font: { size: 13 }, callback: chartOpts } },
+        x: { ticks: { font: { size: 12 } } }
+      }
+    }
+  });
+}
+
+// ============================================================
+// 起動
+// ============================================================
+init();
+</script>
+</body>
+</html>
