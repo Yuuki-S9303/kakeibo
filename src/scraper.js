@@ -258,6 +258,8 @@ async function scrapeMFAssets(page) {
 
     const rows = document.querySelectorAll('#account-table tr[id]');
 
+    const EXCLUDED_ACCOUNTS = ['住信SBIネット銀行'];
+
     rows.forEach(row => {
       const nameEl   = row.querySelector('td:first-child a');
       // 資産列: td.asset があればそれ、なければ2列目
@@ -267,6 +269,7 @@ async function scrapeMFAssets(page) {
       const name      = nameEl.textContent.trim().replace(/\s+/g, ' ');
       const amountTxt = assetTd.textContent.trim();
       if (!name || !amountTxt) return;
+      if (EXCLUDED_ACCOUNTS.includes(name)) return;
 
       const amount = parseInt(amountTxt.replace(/[^\-\d]/g, ''), 10);
       if (isNaN(amount)) return;
