@@ -114,22 +114,30 @@ function handleTextMessage(replyToken, userId, text) {
 /** 1行を解析してDB書き込み＋返信文字列を返す。認識できなければ null */
 function processLine(userId, text) {
   const INCOME_CATEGORIES_WITH_PERSON    = ['給与', '賞与', '副業'];
-  const INCOME_CATEGORIES_WITHOUT_PERSON = ['臨時収入', '補助金', '還付金'];
+  const INCOME_CATEGORIES_WITHOUT_PERSON = ['臨時収入', '補助金', '還付金', '投資収入'];
   const ALL_INCOME_CATEGORIES = [...INCOME_CATEGORIES_WITH_PERSON, ...INCOME_CATEGORIES_WITHOUT_PERSON];
+
+  const EXPENSE_CATEGORIES = [
+    '食費', '日用品', '衣服', '美容', '医療費', '住居費',
+    '交通費', '通信費', '光熱費', '交際費', '教育費',
+    '家具・家電', '旅行・娯楽', 'プレゼント', 'その他',
+  ];
 
   // 1. 残高記録: 「残高 ¥8000」「残高8000」「balance 8000」
   const balanceMatch = text.match(/^(?:残高|balance)\s*[¥￥]?\s*([\d,]+)/i);
   if (balanceMatch) return handleCashBalance(parseAmount(balanceMatch[1]));
 
-  // 2. 収入記録（カテゴリ別ショートカット）
-  const incomeCategoryPattern = new RegExp(`^(${ALL_INCOME_CATEGORIES.join('|')})\\s+([\\d,]+)`, 'i');
+  // 2. 収入記録: 「給与 400000」「給与 400000 残業代」
+  const incomeCategoryPattern = new RegExp(`^(${ALL_INCOME_CATEGORIES.join('|')})\\s+([\\d,]+)\\s*(.*)`, 'i');
   const incomeCategoryMatch = text.match(incomeCategoryPattern);
   if (incomeCategoryMatch) {
     const categoryName = incomeCategoryMatch[1];
-    const amount = parseAmount(incomeCategoryMatch[2]);
-    const withPerson = INCOME_CATEGORIES_WITH_PERSON.includes(categoryName);
-    const person = withPerson ? resolvePersonName(userId) : null;
-    const memo = person ? `${categoryName}（${person}）` : categoryName;
+    const amount       = parseAmount(incomeCategoryMatch[2]);
+    const extraMemo    = incomeCategoryMatch[3].trim();
+    const withPerson   = INCOME_CATEGORIES_WITH_PERSON.includes(categoryName);
+    const person       = withPerson ? resolvePersonName(userId) : null;
+    const memo         = [person ? `${categoryName}（${person}）` : categoryName, extraMemo]
+                           .filter(Boolean).join(' ');
     return handleIncome(amount, memo);
   }
 
@@ -141,11 +149,22 @@ function processLine(userId, text) {
   const assetMatch = text.match(/^(?:資産|asset)\s+(\S+)\s+([\d,]+)/i);
   if (assetMatch) return handleAssetRecord(assetMatch[1], parseAmount(assetMatch[2]));
 
-  // 4. 手入力支出: 「1500 ランチ」「-1500 ランチ」
-  const expenseMatch = text.match(/^-?([\d,]+)\s+(.+)/);
-  if (expenseMatch) return handleManualExpense(parseAmount(expenseMatch[1]), expenseMatch[2].trim());
+  // 4. カテゴリ指定支出: 「食費 1500 ランチ」「交通費 280」
+  const expenseCategoryPattern = new RegExp(`^(${EXPENSE_CATEGORIES.join('|')})\\s+([\\d,]+)\\s*(.*)`, 'i');
+  const expenseCategoryMatch = text.match(expenseCategoryPattern);
+  if (expenseCategoryMatch) {
+    return handleManualExpense(
+      parseAmount(expenseCategoryMatch[2]),
+      expenseCategoryMatch[3].trim(),
+      expenseCategoryMatch[1],
+    );
+  }
 
-  // 5. ヘルプ
+  // 5. 数字始まりの旧形式（後方互換）: 「1500 ランチ」
+  const expenseMatch = text.match(/^-?([\d,]+)\s+(.+)/);
+  if (expenseMatch) return handleManualExpense(parseAmount(expenseMatch[1]), expenseMatch[2].trim(), '');
+
+  // 6. ヘルプ
   if (/^(help|ヘルプ|使い方)$/i.test(text)) return getHelpText();
 
   return null; // 認識できない行は無視
@@ -211,7 +230,7 @@ function getLastCashBalance(sheet) {
 // ============================================================
 // 手入力支出登録
 // ============================================================
-function handleManualExpense(amount, memo) {
+function handleManualExpense(amount, memo, category) {
   const ss    = openSpreadsheet();
   const sheet = ss.getSheetByName(SHEETS.TRANSACTIONS);
   const now   = new Date();
@@ -221,7 +240,7 @@ function handleManualExpense(amount, memo) {
     formatDate(now),
     amount,
     'expense',
-    '',          // category: 後でLIFFで設定
+    category || '',
     '',
     '手入力',
     memo,
@@ -230,7 +249,9 @@ function handleManualExpense(amount, memo) {
     nowJSTString(),
   ]);
 
-  return `支出を登録しました。\n金額: ¥${amount.toLocaleString()}\nメモ: ${memo}`;
+  let reply = `支出を登録しました。\nカテゴリ: ${category || '未設定'}\n金額: ¥${amount.toLocaleString()}`;
+  if (memo) reply += `\nメモ: ${memo}`;
+  return reply;
 }
 
 // ============================================================

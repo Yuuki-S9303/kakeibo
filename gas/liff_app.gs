@@ -28,7 +28,15 @@ const LIFF_SHEETS = {
 // ============================================================
 
 function doGet(e) {
+  const page   = e && e.parameter && e.parameter.page;
   const action = e && e.parameter && e.parameter.action;
+
+  // 使い方ページ
+  if (page === 'help') {
+    return HtmlService.createHtmlOutputFromFile('help')
+      .setTitle('使い方')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
 
   // アクション指定あり → JSON APIとして動作
   if (action) {
