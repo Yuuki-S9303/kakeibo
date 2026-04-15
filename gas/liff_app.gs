@@ -75,30 +75,64 @@ function handleApiRequest(e) {
 }
 
 // ============================================================
+// 給与・賞与判定（前月登録 → 当月収入としてシフト）
+// category列またはmemo列で判定（新旧データ両対応）
+// ============================================================
+const SALARY_CATEGORIES = ['給与', '賞与'];
+
+function isSalaryIncome(category, memo) {
+  const cat = String(category || '');
+  const m   = String(memo || '');
+  return SALARY_CATEGORIES.includes(cat) || SALARY_CATEGORIES.some(s => m.startsWith(s));
+}
+
+/** YYYY-MM の翌月を YYYY-MM 形式で返す */
+function nextMonthStr(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, m, 1); // mは0始まり換算でそのまま翌月
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+/** YYYY-MM の前月を YYYY-MM 形式で返す */
+function prevMonthStr(ym) {
+  const [y, m] = ym.split('-').map(Number);
+  const d = new Date(y, m - 2, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// ============================================================
 // API: 月次収支サマリー
+// 給与・賞与: 前月登録分を当月収入として計上
+// その他収入: 当月登録分をそのまま計上
 // ============================================================
 function getMonthlySummary(year, month) {
-  const ss        = openLiffSpreadsheet();
-  const sheet     = ss.getSheetByName(LIFF_SHEETS.TRANSACTIONS);
-  const lastRow   = sheet.getLastRow();
-  const monthStr  = `${year}-${String(month).padStart(2, '0')}`;
+  const ss       = openLiffSpreadsheet();
+  const sheet    = ss.getSheetByName(LIFF_SHEETS.TRANSACTIONS);
+  const lastRow  = sheet.getLastRow();
+  const monthStr = `${year}-${String(month).padStart(2, '0')}`;
+  const prevStr  = prevMonthStr(monthStr);
 
   let totalIncome  = 0;
   let totalExpense = 0;
   const byCategory = {};
 
   if (lastRow >= 2) {
-    const data = sheet.getRange(2, 1, lastRow - 1, 5).getValues();
-    for (const [id, date, amount, type, category] of data) {
+    const data = sheet.getRange(2, 1, lastRow - 1, 9).getValues();
+    for (const [, date, amount, type, category, , , memo] of data) {
       if (!date) continue;
       const dateStr = date instanceof Date
         ? Utilities.formatDate(date, 'Asia/Tokyo', 'yyyy-MM')
         : String(date).slice(0, 7);
-      if (dateStr !== monthStr) continue;
       const amt = Number(amount) || 0;
+
       if (isIncomeType(type)) {
-        totalIncome += amt;
+        const salary = isSalaryIncome(category, memo);
+        // 給与・賞与は前月登録分を当月収入に / その他は当月登録分を当月収入に
+        if ((salary && dateStr === prevStr) || (!salary && dateStr === monthStr)) {
+          totalIncome += amt;
+        }
       } else if (isExpenseType(type)) {
+        if (dateStr !== monthStr) continue;
         totalExpense += amt;
         const cat = category || 'その他';
         byCategory[cat] = (byCategory[cat] || 0) + amt;
@@ -188,15 +222,21 @@ function getSavingsTrend() {
   const expense = Object.fromEntries(months.map(m => [m, 0]));
 
   if (lastRow >= 2) {
-    const data = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
-    for (const [id, date, amount, type] of data) {
+    const data = sheet.getRange(2, 1, lastRow - 1, 9).getValues();
+    for (const [, date, amount, type, category, , , memo] of data) {
       if (!date) continue;
       const m = date instanceof Date
         ? Utilities.formatDate(date, 'Asia/Tokyo', 'yyyy-MM')
         : String(date).slice(0, 7);
-      if (!income.hasOwnProperty(m)) continue;
-      if (isIncomeType(type))  income[m]  += Number(amount) || 0;
-      if (isExpenseType(type)) expense[m] += Number(amount) || 0;
+      const amt = Number(amount) || 0;
+
+      if (isIncomeType(type)) {
+        const salary  = isSalaryIncome(category, memo);
+        const targetM = salary ? nextMonthStr(m) : m; // 給与・賞与は翌月に計上
+        if (income.hasOwnProperty(targetM)) income[targetM] += amt;
+      } else if (isExpenseType(type)) {
+        if (expense.hasOwnProperty(m)) expense[m] += amt;
+      }
     }
   }
 

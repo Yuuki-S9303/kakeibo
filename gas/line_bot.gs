@@ -138,12 +138,12 @@ function processLine(userId, text) {
     const person       = withPerson ? resolvePersonName(userId) : null;
     const memo         = [person ? `${categoryName}（${person}）` : categoryName, extraMemo]
                            .filter(Boolean).join(' ');
-    return handleIncome(amount, memo);
+    return handleIncome(amount, memo, categoryName);
   }
 
   // 収入コマンド（汎用）: 「収入 250000 メモ」
   const incomeMatch = text.match(/^(?:収入|income)\s+([\d,]+)\s*(.+)?/i);
-  if (incomeMatch) return handleIncome(parseAmount(incomeMatch[1]), (incomeMatch[2] || '').trim());
+  if (incomeMatch) return handleIncome(parseAmount(incomeMatch[1]), (incomeMatch[2] || '').trim(), '');
 
   // 3. 資産記録: 「資産 SBI 1500000」「資産 現金 50000」
   const assetMatch = text.match(/^(?:資産|asset)\s+(\S+)\s+([\d,]+)/i);
@@ -268,7 +268,7 @@ function resolvePersonName(userId) {
 // ============================================================
 // 収入記録
 // ============================================================
-function handleIncome(amount, memo) {
+function handleIncome(amount, memo, category) {
   const ss    = openSpreadsheet();
   const sheet = ss.getSheetByName(SHEETS.TRANSACTIONS);
   const now   = new Date();
@@ -278,16 +278,16 @@ function handleIncome(amount, memo) {
     formatDate(now),
     amount,
     'income',
-    '収入',
+    category || '収入',
     '',
     '振込',
-    memo || '収入',
+    memo || category || '収入',
     'line_manual',
     '',
     nowJSTString(),
   ]);
 
-  return `収入を登録しました ✅\n金額: ¥${amount.toLocaleString()}\nメモ: ${memo || '収入'}`;
+  return `収入を登録しました ✅\n金額: ¥${amount.toLocaleString()}\nメモ: ${memo || category || '収入'}`;
 }
 
 // ============================================================
@@ -339,23 +339,34 @@ function buildMonthlyReport(ss, monthStr) {
 
   if (lastRow < 2) return `${monthStr} のデータがありません。`;
 
-  const data = sheet.getRange(2, 1, lastRow - 1, 11).getValues();
+  const data    = sheet.getRange(2, 1, lastRow - 1, 9).getValues();
+  const prevStr = (() => {
+    const [y, m] = monthStr.split('-').map(Number);
+    const d = new Date(y, m - 2, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  })();
 
+  const SALARY_CATS = ['給与', '賞与'];
   let totalExpense = 0;
   let totalIncome  = 0;
   const byCategory = {};
 
-  for (const row of data) {
-    const [id, date, amount, type, category] = row;
-    if (!date || String(date).slice(0, 7) !== monthStr) continue;
-
+  for (const [, date, amount, type, category, , , memo] of data) {
+    if (!date) continue;
+    const dateStr = String(date).slice(0, 7);
     const amt = Number(amount) || 0;
-    if (type === 'expense') {
+
+    if (type === 'income' || type === '収入') {
+      const isSalary = SALARY_CATS.includes(String(category || '')) ||
+                       SALARY_CATS.some(s => String(memo || '').startsWith(s));
+      if ((isSalary && dateStr === prevStr) || (!isSalary && dateStr === monthStr)) {
+        totalIncome += amt;
+      }
+    } else if (type === 'expense' || type === '支出') {
+      if (dateStr !== monthStr) continue;
       totalExpense += amt;
       const cat = category || 'その他';
       byCategory[cat] = (byCategory[cat] || 0) + amt;
-    } else if (type === 'income') {
-      totalIncome += amt;
     }
   }
 
