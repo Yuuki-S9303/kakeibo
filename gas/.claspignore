@@ -1,0 +1,4 @@
+cloudflare-worker.js
+**/*.md
+.clasp.json
+.claspignore
