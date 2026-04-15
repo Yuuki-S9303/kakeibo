@@ -59,7 +59,7 @@ async function main() {
   }
 
   if (DRY_RUN) {
-    console.log('\n── dry-run: 追加予定データ ──');
+    console.log('\n── dry-run: 追加・更新予定データ ──');
     for (const r of rows) {
       console.log(`  ${r.date}  ${r.type === 'expense' ? '-' : '+'}${r.amount.toLocaleString()}円  ${r.payment_method}  ${r.memo}  [${r.external_id}]`);
     }
@@ -67,18 +67,37 @@ async function main() {
     return;
   }
 
-  const sheets      = await buildSheetsClient();
-  const existingIds = await fetchExistingExternalIds(sheets);
-  console.log(`[${now()}] 既存レコード: ${existingIds.size}件`);
+  const sheets       = await buildSheetsClient();
+  const existingRows = await fetchExistingRows(sheets);
+  console.log(`[${now()}] 既存レコード: ${existingRows.size}件`);
 
-  const newRows = rows.filter(r => !existingIds.has(r.external_id));
+  const newRows     = [];
+  const updateRows  = [];
+
+  for (const r of rows) {
+    const existing = existingRows.get(r.external_id);
+    if (!existing) {
+      newRows.push(r);
+    } else if (existing.category !== r.category || existing.subcategory !== r.subcategory) {
+      updateRows.push({ ...r, sheetRowIndex: existing.sheetRowIndex });
+    }
+  }
+
   console.log(`[${now()}] 新規追加対象: ${newRows.length}件`);
+  console.log(`[${now()}] カテゴリ更新対象: ${updateRows.length}件`);
+
+  if (updateRows.length > 0) {
+    await updateCategoryRows(sheets, updateRows);
+    console.log(`[${now()}] カテゴリ更新完了`);
+  }
 
   if (newRows.length > 0) {
     await appendRows(sheets, newRows);
-    console.log(`[${now()}] 書き込み完了`);
-  } else {
-    console.log('新規データなし。スキップ。');
+    console.log(`[${now()}] 新規追加完了`);
+  }
+
+  if (newRows.length === 0 && updateRows.length === 0) {
+    console.log('変更なし。スキップ。');
   }
 
   console.log(`[${now()}] 完了`);
@@ -282,13 +301,44 @@ async function buildSheetsClient() {
   return google.sheets({ version: 'v4', auth });
 }
 
-async function fetchExistingExternalIds(sheets) {
+/**
+ * 既存レコードを external_id → { sheetRowIndex, category, subcategory } のMapで返す
+ * sheetRowIndex は1始まり（ヘッダー行=1、データ行=2〜）
+ */
+async function fetchExistingRows(sheets) {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId: SPREADSHEET_ID,
-    range:         `${SHEET_NAME}!J2:J`,
+    range:         `${SHEET_NAME}!E2:J`,  // E:category F:subcategory J:external_id
   });
   const values = res.data.values || [];
-  return new Set(values.flat().filter(Boolean));
+  const map = new Map();
+  values.forEach((row, i) => {
+    const externalId = row[5]; // J列（E〜Jの6列目、0始まりで5）
+    if (externalId) {
+      map.set(externalId, {
+        sheetRowIndex: i + 2,   // ヘッダー1行 + 0始まりインデックス
+        category:    row[0] || '',  // E列
+        subcategory: row[1] || '',  // F列
+      });
+    }
+  });
+  return map;
+}
+
+/** 既存行のカテゴリ・サブカテゴリを一括更新 */
+async function updateCategoryRows(sheets, rows) {
+  const data = rows.map(r => ({
+    range:  `${SHEET_NAME}!E${r.sheetRowIndex}:F${r.sheetRowIndex}`,
+    values: [[r.category, r.subcategory]],
+  }));
+
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: {
+      valueInputOption: 'USER_ENTERED',
+      data,
+    },
+  });
 }
 
 async function appendRows(sheets, rows) {
