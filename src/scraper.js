@@ -251,18 +251,17 @@ async function scrapeMFAssets(page) {
     // MF /accounts ページの構造:
     //   <table id="account-table">
     //     <tr><th class="service">金融機関</th><th class="asset">資産</th>...</tr>  ← ヘッダー
-    //     <tr id="[hash]"><td><a>口座名</a></td><td class="asset">残高</td>...</tr>  ← データ行
+    //     <tr id="[hash]"><td><a href="/accounts/show/[hash]">口座名</a></td>...   ← データ行
     //   </table>
-    //
-    // データ行だけ取るため id 属性付きの tr を対象にする
-
     const rows = document.querySelectorAll('#account-table tr[id]');
 
     const EXCLUDED_ACCOUNTS = ['住信SBIネット銀行'];
 
+    // SBI証券の詳細URL（元本取得用）
+    let sbiDetailPath = null;
+
     rows.forEach(row => {
       const nameEl   = row.querySelector('td:first-child a');
-      // 資産列: td.asset があればそれ、なければ2列目
       const assetTd  = row.querySelector('td.asset') || row.querySelector('td:nth-child(2)');
       if (!nameEl || !assetTd) return;
 
@@ -271,6 +270,11 @@ async function scrapeMFAssets(page) {
       if (!name || !amountTxt) return;
       if (EXCLUDED_ACCOUNTS.includes(name)) return;
 
+      // SBI証券の詳細ページパスを記録
+      if (name === 'SBI証券' && nameEl.getAttribute('href')) {
+        sbiDetailPath = nameEl.getAttribute('href');
+      }
+
       const amount = parseInt(amountTxt.replace(/[^\-\d]/g, ''), 10);
       if (isNaN(amount)) return;
 
@@ -278,7 +282,7 @@ async function scrapeMFAssets(page) {
     });
 
     const bodyPreview = document.body.innerHTML.slice(0, 4000);
-    return { results, bodyPreview };
+    return { results, sbiDetailPath, bodyPreview };
   });
 
   if (DEBUG || rawAssets.results.length === 0) {
@@ -292,13 +296,98 @@ async function scrapeMFAssets(page) {
 
   console.log(`[${now()}] 取得口座: ${rawAssets.results.map(r => r.type).join(', ')}`);
 
-  return rawAssets.results.map(r => ({
+  const assetRows = rawAssets.results.map(r => ({
     id:         generateId(),
     date:       dateStr,
     type:       r.type,
     amount:     r.amount,
     created_at: new Date().toISOString(),
   }));
+
+  // SBI証券の詳細ページから元本を取得
+  if (rawAssets.sbiDetailPath) {
+    const motokin = await scrapeSBIMotoken(page, rawAssets.sbiDetailPath, dateStr);
+    if (motokin !== null) {
+      assetRows.push({
+        id:         generateId(),
+        date:       dateStr,
+        type:       'SBI証券元本',
+        amount:     motokin,
+        created_at: new Date().toISOString(),
+      });
+      console.log(`[${now()}] SBI証券元本: ${motokin.toLocaleString()}円`);
+    }
+  }
+
+  return assetRows;
+}
+
+// ============================================================
+// /bs/portfolio ページから取得原価合計（SBI証券元本）を取得
+// ============================================================
+async function scrapeSBIMotoken(page, detailPath, dateStr) {
+  console.log(`[${now()}] ポートフォリオページから元本取得中...`);
+  await page.goto(`${MF_BASE}/bs/portfolio`, { waitUntil: 'networkidle' });
+  // 動的コンテンツの描画を待つ
+  await page.waitForTimeout(2000);
+  await screenshot(page, 'bs_portfolio');
+
+  const result = await page.evaluate(() => {
+    // /bs/portfolio の保有資産テーブル構造（確認済み）:
+    //   列: 銘柄名(0) | 保有数(1) | 平均取得単価(2) | 基準価額(3) | 評価額(4)
+    //       | 前日比(5) | 評価損益(6) | 評価損益率(7) | 保有金融機関(8) | 取得日(9)...
+    //
+    // 元本 = Σ(評価額 - 評価損益) で SBI証券行を合算
+
+    let total = null;
+
+    document.querySelectorAll('table').forEach(table => {
+      if (total !== null) return;
+
+      // ヘッダー行を取得（thead または最初の tr）
+      const headerRow = table.querySelector('thead tr') || table.querySelector('tr');
+      if (!headerRow) return;
+      const headers = Array.from(headerRow.querySelectorAll('th, td')).map(th => th.textContent.trim());
+
+      const evalIdx  = headers.findIndex(h => h.includes('評価額'));
+      const gainIdx  = headers.findIndex(h => h.includes('評価損益') && !h.includes('率'));
+      const instIdx  = headers.findIndex(h => h.includes('保有金融機関'));
+      if (evalIdx === -1 || gainIdx === -1) return;
+
+      let sum = 0;
+      let rowCount = 0;
+
+      table.querySelectorAll('tbody tr').forEach(tr => {
+        const cells = tr.querySelectorAll('td');
+        if (cells.length <= Math.max(evalIdx, gainIdx)) return;
+
+        // 保有金融機関列でSBI証券に絞る（列がなければ全行対象）
+        if (instIdx !== -1) {
+          const inst = cells[instIdx]?.textContent.trim() || '';
+          if (inst && !inst.includes('SBI証券')) return;
+        }
+
+        const evalAmt = parseInt((cells[evalIdx]?.textContent || '').replace(/[^\-\d]/g, ''), 10);
+        const gainAmt = parseInt((cells[gainIdx]?.textContent || '').replace(/[^\-\d]/g, ''), 10);
+        if (isNaN(evalAmt) || isNaN(gainAmt)) return;
+
+        sum += evalAmt - gainAmt;
+        rowCount++;
+      });
+
+      if (rowCount > 0) {
+        total = sum;
+      }
+    });
+
+    return { total };
+  });
+
+  if (result.total === null) {
+    console.warn('[WARN] SBI証券元本が取得できませんでした。--debug フラグで構造を確認してください。');
+  }
+
+  return result.total;
 }
 
 // ============================================================
