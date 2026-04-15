@@ -100,6 +100,10 @@ async function main() {
     console.log('変更なし。スキップ。');
   }
 
+  // 日付昇順ソート（変更の有無に関わらず常に実行）
+  await sortByDate(sheets);
+  console.log(`[${now()}] 日付昇順ソート完了`);
+
   console.log(`[${now()}] 完了`);
 }
 
@@ -323,6 +327,33 @@ async function fetchExistingRows(sheets) {
     }
   });
   return map;
+}
+
+/** transactionsシートをB列（date）で昇順ソート */
+async function sortByDate(sheets) {
+  // シートIDを取得
+  const meta = await sheets.spreadsheets.get({ spreadsheetId: SPREADSHEET_ID });
+  const sheet = meta.data.sheets.find(s => s.properties.title === SHEET_NAME);
+  if (!sheet) throw new Error(`シート "${SHEET_NAME}" が見つかりません`);
+  const sheetId = sheet.properties.sheetId;
+
+  await sheets.spreadsheets.batchUpdate({
+    spreadsheetId: SPREADSHEET_ID,
+    requestBody: {
+      requests: [{
+        sortRange: {
+          range: {
+            sheetId,
+            startRowIndex: 1, // ヘッダー行(0)を除く
+          },
+          sortSpecs: [{
+            dimensionIndex: 1, // B列（0始まり）
+            sortOrder: 'ASCENDING',
+          }],
+        },
+      }],
+    },
+  });
 }
 
 /** 既存行のカテゴリ・サブカテゴリを一括更新 */
