@@ -50,10 +50,11 @@ function handleApiRequest(e) {
   let result;
   try {
     switch (action) {
-      case 'monthly_summary': result = getMonthlySummary(year, month); break;
-      case 'budget_status':   result = getBudgetStatus(year, month);   break;
-      case 'savings_trend':   result = getSavingsTrend();              break;
-      case 'assets_trend':    result = getAssetsTrend();               break;
+      case 'monthly_summary':       result = getMonthlySummary(year, month);                                    break;
+      case 'budget_status':         result = getBudgetStatus(year, month);                                      break;
+      case 'savings_trend':         result = getSavingsTrend();                                                  break;
+      case 'assets_trend':          result = getAssetsTrend();                                                   break;
+      case 'category_transactions': result = getCategoryTransactions(year, month, e.parameter.category || ''); break;
       default: result = { error: '不明なアクション: ' + action };
     }
   } catch (err) {
@@ -231,6 +232,43 @@ function openLiffSpreadsheet() {
   const id = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID')
     || '1BzRyEA-sdxmD_BMcmkVIaM54Sk6guhatQP5M0jdew9s';
   return SpreadsheetApp.openById(id);
+}
+
+// ============================================================
+// API: カテゴリ別明細（月×カテゴリ）
+// ============================================================
+function getCategoryTransactions(year, month, category) {
+  const ss       = openLiffSpreadsheet();
+  const sheet    = ss.getSheetByName(LIFF_SHEETS.TRANSACTIONS);
+  const lastRow  = sheet.getLastRow();
+  const monthStr = `${year}-${String(month).padStart(2, '0')}`;
+
+  if (lastRow < 2) return { transactions: [] };
+
+  const data = sheet.getRange(2, 1, lastRow - 1, 9).getValues();
+  const transactions = [];
+
+  for (const [, date, amount, type, cat, , payment_method, memo] of data) {
+    if (!date) continue;
+    const dateStr = date instanceof Date
+      ? Utilities.formatDate(date, 'Asia/Tokyo', 'yyyy-MM')
+      : String(date).slice(0, 7);
+    if (dateStr !== monthStr) continue;
+    if (!isExpenseType(type)) continue;
+    if ((cat || 'その他') !== category) continue;
+
+    transactions.push({
+      date:           date instanceof Date
+                        ? Utilities.formatDate(date, 'Asia/Tokyo', 'yyyy-MM-dd')
+                        : String(date).slice(0, 10),
+      amount:         Number(amount) || 0,
+      payment_method: String(payment_method || ''),
+      memo:           String(memo || ''),
+    });
+  }
+
+  transactions.sort((a, b) => b.date.localeCompare(a.date));
+  return { year, month, category, transactions };
 }
 
 /** type列の表記揺れ吸収（英語・日本語どちらも対応） */
