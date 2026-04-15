@@ -259,7 +259,7 @@ function handleManualExpense(amount, memo, category) {
 // ============================================================
 function resolvePersonName(userId) {
   const husbandId = getProperty('LINE_USER_ID');
-  const wifeId    = getProperty('LINE_USER_ID_WIFE');
+  const wifeId    = getProperty('WIFE_LINE_USER_ID');
   if (userId === husbandId) return '夫';
   if (wifeId && userId === wifeId) return '妻';
   return null;
