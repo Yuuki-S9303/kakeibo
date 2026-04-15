@@ -95,19 +95,33 @@ function handleEvent(event) {
 
 // ============================================================
 // テキストメッセージ処理
+// 複数行をまとめて送っても1回のreplyで返す
 // ============================================================
 function handleTextMessage(replyToken, userId, text) {
-  // 1. 残高記録: 「残高 ¥8000」「残高8000」「balance 8000」
-  const balanceMatch = text.match(/^(?:残高|balance)\s*[¥￥]?\s*([\d,]+)/i);
-  if (balanceMatch) {
-    handleCashBalance(replyToken, parseAmount(balanceMatch[1]));
-    return;
+  const lines = text.split('\n').map(l => l.trim()).filter(l => l);
+  const replies = [];
+
+  for (const line of lines) {
+    const reply = processLine(userId, line);
+    if (reply) replies.push(reply);
   }
 
-  // 2. 収入記録（カテゴリ別ショートカット）
-  const INCOME_CATEGORIES_WITH_PERSON = ['給与', '賞与', '副業'];
+  if (replies.length === 0) return; // 認識できない入力は無視（LINE無料枠節約）
+
+  replyText(replyToken, replies.join('\n─────────────\n'));
+}
+
+/** 1行を解析してDB書き込み＋返信文字列を返す。認識できなければ null */
+function processLine(userId, text) {
+  const INCOME_CATEGORIES_WITH_PERSON    = ['給与', '賞与', '副業'];
   const INCOME_CATEGORIES_WITHOUT_PERSON = ['臨時収入', '補助金', '還付金'];
   const ALL_INCOME_CATEGORIES = [...INCOME_CATEGORIES_WITH_PERSON, ...INCOME_CATEGORIES_WITHOUT_PERSON];
+
+  // 1. 残高記録: 「残高 ¥8000」「残高8000」「balance 8000」
+  const balanceMatch = text.match(/^(?:残高|balance)\s*[¥￥]?\s*([\d,]+)/i);
+  if (balanceMatch) return handleCashBalance(parseAmount(balanceMatch[1]));
+
+  // 2. 収入記録（カテゴリ別ショートカット）
   const incomeCategoryPattern = new RegExp(`^(${ALL_INCOME_CATEGORIES.join('|')})\\s+([\\d,]+)`, 'i');
   const incomeCategoryMatch = text.match(incomeCategoryPattern);
   if (incomeCategoryMatch) {
@@ -116,44 +130,31 @@ function handleTextMessage(replyToken, userId, text) {
     const withPerson = INCOME_CATEGORIES_WITH_PERSON.includes(categoryName);
     const person = withPerson ? resolvePersonName(userId) : null;
     const memo = person ? `${categoryName}（${person}）` : categoryName;
-    handleIncome(replyToken, amount, memo);
-    return;
+    return handleIncome(amount, memo);
   }
 
   // 収入コマンド（汎用）: 「収入 250000 メモ」
   const incomeMatch = text.match(/^(?:収入|income)\s+([\d,]+)\s*(.+)?/i);
-  if (incomeMatch) {
-    handleIncome(replyToken, parseAmount(incomeMatch[1]), (incomeMatch[2] || '').trim());
-    return;
-  }
+  if (incomeMatch) return handleIncome(parseAmount(incomeMatch[1]), (incomeMatch[2] || '').trim());
 
   // 3. 資産記録: 「資産 SBI 1500000」「資産 現金 50000」
   const assetMatch = text.match(/^(?:資産|asset)\s+(\S+)\s+([\d,]+)/i);
-  if (assetMatch) {
-    handleAssetRecord(replyToken, assetMatch[1], parseAmount(assetMatch[2]));
-    return;
-  }
+  if (assetMatch) return handleAssetRecord(assetMatch[1], parseAmount(assetMatch[2]));
 
-  // 3. 手入力支出: 「1500 ランチ」「-1500 ランチ」
+  // 4. 手入力支出: 「1500 ランチ」「-1500 ランチ」
   const expenseMatch = text.match(/^-?([\d,]+)\s+(.+)/);
-  if (expenseMatch) {
-    handleManualExpense(replyToken, parseAmount(expenseMatch[1]), expenseMatch[2].trim());
-    return;
-  }
+  if (expenseMatch) return handleManualExpense(parseAmount(expenseMatch[1]), expenseMatch[2].trim());
 
-  // 4. ヘルプ
-  if (/^(help|ヘルプ|使い方)$/i.test(text)) {
-    replyText(replyToken, getHelpText());
-    return;
-  }
+  // 5. ヘルプ
+  if (/^(help|ヘルプ|使い方)$/i.test(text)) return getHelpText();
 
-  // 認識できない入力は無視（LINE無料枠節約）
+  return null; // 認識できない行は無視
 }
 
 // ============================================================
 // 現金残高記録
 // ============================================================
-function handleCashBalance(replyToken, newBalance) {
+function handleCashBalance(newBalance) {
   const ss    = openSpreadsheet();
   const sheet = ss.getSheetByName(SHEETS.CASH_BALANCE);
   const now   = new Date();
@@ -195,7 +196,7 @@ function handleCashBalance(replyToken, newBalance) {
     reply += `\n\n⚠️ 残高が¥${Math.abs(diff).toLocaleString()}減少しました。支出の登録はお済みですか？`;
   }
 
-  replyText(replyToken, reply);
+  return reply;
 }
 
 /** cash_balance シートから最新残高を取得 */
@@ -210,7 +211,7 @@ function getLastCashBalance(sheet) {
 // ============================================================
 // 手入力支出登録
 // ============================================================
-function handleManualExpense(replyToken, amount, memo) {
+function handleManualExpense(amount, memo) {
   const ss    = openSpreadsheet();
   const sheet = ss.getSheetByName(SHEETS.TRANSACTIONS);
   const now   = new Date();
@@ -229,7 +230,7 @@ function handleManualExpense(replyToken, amount, memo) {
     nowJSTString(),
   ]);
 
-  replyText(replyToken, `支出を登録しました。\n金額: ¥${amount.toLocaleString()}\nメモ: ${memo}\n\nカテゴリはLIFFアプリで設定できます。`);
+  return `支出を登録しました。\n金額: ¥${amount.toLocaleString()}\nメモ: ${memo}`;
 }
 
 // ============================================================
@@ -246,7 +247,7 @@ function resolvePersonName(userId) {
 // ============================================================
 // 収入記録
 // ============================================================
-function handleIncome(replyToken, amount, memo) {
+function handleIncome(amount, memo) {
   const ss    = openSpreadsheet();
   const sheet = ss.getSheetByName(SHEETS.TRANSACTIONS);
   const now   = new Date();
@@ -265,18 +266,13 @@ function handleIncome(replyToken, amount, memo) {
     nowJSTString(),
   ]);
 
-  const reply =
-    `収入を登録しました ✅\n` +
-    `金額: ¥${amount.toLocaleString()}\n` +
-    `メモ: ${memo || '収入'}`;
-
-  replyText(replyToken, reply);
+  return `収入を登録しました ✅\n金額: ¥${amount.toLocaleString()}\nメモ: ${memo || '収入'}`;
 }
 
 // ============================================================
 // 資産記録
 // ============================================================
-function handleAssetRecord(replyToken, assetType, amount) {
+function handleAssetRecord(assetType, amount) {
   const ss    = openSpreadsheet();
   const sheet = ss.getSheetByName(SHEETS.ASSETS);
   const now   = new Date();
@@ -290,7 +286,7 @@ function handleAssetRecord(replyToken, assetType, amount) {
     nowJSTString(),
   ]);
 
-  replyText(replyToken, `資産を記録しました。\n種類: ${assetType}\n金額: ¥${amount.toLocaleString()}`);
+  return `資産を記録しました。\n種類: ${assetType}\n金額: ¥${amount.toLocaleString()}`;
 }
 
 // ============================================================
