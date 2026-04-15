@@ -2,7 +2,9 @@
  * scraper.js
  * MoneyForward ME (住信SBIネット銀行版) → Google Sheets 自動同期
  *
- * CSVダウンロードが有料機能のため、HTMLテーブル（#cf-detail-table）をスクレイピング。
+ * CSVダウンロードが有料機能のため、HTMLテーブルをスクレイピング。
+ *   収支: /cf の #cf-detail-table
+ *   資産: /bs の 口座ごと残高リスト
  *
  * 環境変数（GitHub Secrets から注入）:
  *   MF_AUTH_STATE              : auth.json の中身（login.js で生成）
@@ -20,6 +22,9 @@
  * Google Sheets の transactions シート列構成:
  *   A: id  B: date  C: amount  D: type  E: category  F: subcategory
  *   G: payment_method  H: memo  I: source  J: external_id  K: created_at
+ *
+ * Google Sheets の assets シート列構成:
+ *   A: id  B: date  C: type  D: amount  E: created_at
  */
 
 'use strict';
@@ -35,10 +40,11 @@ const fs           = require('fs');
 // ============================================================
 // 定数
 // ============================================================
-const SPREADSHEET_ID = process.env.SPREADSHEET_ID;
-const SHEET_NAME     = 'transactions';
-const AUTH_FILE      = path.join(__dirname, '..', 'auth.json');
-const MF_BASE        = 'https://ssnb.x.moneyforward.com';
+const SPREADSHEET_ID    = process.env.SPREADSHEET_ID;
+const SHEET_NAME        = 'transactions';
+const ASSETS_SHEET_NAME = 'assets';
+const AUTH_FILE         = path.join(__dirname, '..', 'auth.json');
+const MF_BASE           = 'https://ssnb.x.moneyforward.com';
 
 const DRY_RUN = process.argv.includes('--dry-run');
 const HEADED  = process.argv.includes('--headed');
@@ -50,61 +56,98 @@ const DEBUG   = process.argv.includes('--debug');
 async function main() {
   console.log(`[${now()}] スクレイピング開始 ${DRY_RUN ? '(dry-run)' : ''}`);
 
-  const rows = await scrapeMFTransactions();
-  console.log(`[${now()}] 取得: ${rows.length}件（振替・計算対象外除く）`);
+  const storageState = loadStorageState();
+  const browser = await chromium.launch({ headless: !HEADED });
+  const context = await browser.newContext({
+    locale:     'ja-JP',
+    timezoneId: 'Asia/Tokyo',
+    storageState,
+  });
+  const page = await context.newPage();
 
-  if (rows.length === 0) {
-    console.log('データなし。終了。');
-    return;
-  }
+  try {
+    // ログイン確認
+    console.log(`[${now()}] セッション確認中...`);
+    await page.goto(`${MF_BASE}/`, { waitUntil: 'networkidle' });
+    await screenshot(page, '01_top');
 
-  if (DRY_RUN) {
-    console.log('\n── dry-run: 追加・更新予定データ ──');
-    for (const r of rows) {
-      console.log(`  ${r.date}  ${r.type === 'expense' ? '-' : '+'}${r.amount.toLocaleString()}円  ${r.payment_method}  ${r.memo}  [${r.external_id}]`);
+    const url = page.url();
+    if (!url.includes('ssnb.x.moneyforward.com') || url.includes('login') || url.includes('sign_in')) {
+      throw new Error('セッションが切れています。`node src/login.js` を再実行してください。');
     }
-    console.log(`\n合計 ${rows.length} 件（実際には書き込まれません）`);
-    return;
-  }
+    console.log(`[${now()}] ログイン確認OK`);
 
-  const sheets       = await buildSheetsClient();
-  const existingRows = await fetchExistingRows(sheets);
-  console.log(`[${now()}] 既存レコード: ${existingRows.size}件`);
+    // ── 収支スクレイプ ──────────────────────────────────────────
+    const rows = await scrapeMFTransactions(page);
+    console.log(`[${now()}] 収支取得: ${rows.length}件（振替・計算対象外除く）`);
 
-  const newRows     = [];
-  const updateRows  = [];
+    // ── 資産スクレイプ ──────────────────────────────────────────
+    const assetRows = await scrapeMFAssets(page);
+    console.log(`[${now()}] 資産取得: ${assetRows.length}件`);
 
-  for (const r of rows) {
-    const existing = existingRows.get(r.external_id);
-    if (!existing) {
-      newRows.push(r);
-    } else if (existing.category !== r.category || existing.subcategory !== r.subcategory) {
-      updateRows.push({ ...r, sheetRowIndex: existing.sheetRowIndex });
+    if (DRY_RUN) {
+      console.log('\n── dry-run: 収支追加・更新予定データ ──');
+      for (const r of rows) {
+        console.log(`  ${r.date}  ${r.type === 'expense' ? '-' : '+'}${r.amount.toLocaleString()}円  ${r.payment_method}  ${r.memo}  [${r.external_id}]`);
+      }
+      console.log(`\n── dry-run: 資産スナップショット ──`);
+      for (const r of assetRows) {
+        console.log(`  ${r.date}  ${r.type}  ${r.amount.toLocaleString()}円`);
+      }
+      console.log(`\n合計 収支${rows.length}件 / 資産${assetRows.length}件（実際には書き込まれません）`);
+      return;
     }
+
+    const sheets = await buildSheetsClient();
+
+    // 収支: 差分検出して追加・更新
+    if (rows.length > 0) {
+      const existingRows = await fetchExistingRows(sheets);
+      console.log(`[${now()}] 既存収支レコード: ${existingRows.size}件`);
+
+      const newRows    = [];
+      const updateRows = [];
+
+      for (const r of rows) {
+        const existing = existingRows.get(r.external_id);
+        if (!existing) {
+          newRows.push(r);
+        } else if (existing.category !== r.category || existing.subcategory !== r.subcategory) {
+          updateRows.push({ ...r, sheetRowIndex: existing.sheetRowIndex });
+        }
+      }
+
+      console.log(`[${now()}] 新規追加対象: ${newRows.length}件`);
+      console.log(`[${now()}] カテゴリ更新対象: ${updateRows.length}件`);
+
+      if (updateRows.length > 0) {
+        await updateCategoryRows(sheets, updateRows);
+        console.log(`[${now()}] カテゴリ更新完了`);
+      }
+      if (newRows.length > 0) {
+        await appendRows(sheets, newRows);
+        console.log(`[${now()}] 新規追加完了`);
+      }
+      if (newRows.length === 0 && updateRows.length === 0) {
+        console.log('収支: 変更なし。スキップ。');
+      }
+
+      // 日付昇順ソート
+      await sortByDate(sheets);
+      console.log(`[${now()}] 収支 日付昇順ソート完了`);
+    }
+
+    // 資産: 常にappend
+    if (assetRows.length > 0) {
+      await appendAssetRows(sheets, assetRows);
+      console.log(`[${now()}] 資産スナップショット追加完了`);
+    }
+
+    console.log(`[${now()}] 完了`);
+
+  } finally {
+    await browser.close();
   }
-
-  console.log(`[${now()}] 新規追加対象: ${newRows.length}件`);
-  console.log(`[${now()}] カテゴリ更新対象: ${updateRows.length}件`);
-
-  if (updateRows.length > 0) {
-    await updateCategoryRows(sheets, updateRows);
-    console.log(`[${now()}] カテゴリ更新完了`);
-  }
-
-  if (newRows.length > 0) {
-    await appendRows(sheets, newRows);
-    console.log(`[${now()}] 新規追加完了`);
-  }
-
-  if (newRows.length === 0 && updateRows.length === 0) {
-    console.log('変更なし。スキップ。');
-  }
-
-  // 日付昇順ソート（変更の有無に関わらず常に実行）
-  await sortByDate(sheets);
-  console.log(`[${now()}] 日付昇順ソート完了`);
-
-  console.log(`[${now()}] 完了`);
 }
 
 // ============================================================
@@ -134,86 +177,140 @@ function loadStorageState() {
 }
 
 // ============================================================
-// MoneyForward ME HTMLテーブルスクレイピング
+// MoneyForward ME 収支スクレイピング（pageを引数で受け取る）
 // ============================================================
-async function scrapeMFTransactions() {
-  const storageState = loadStorageState();
-  const browser = await chromium.launch({ headless: !HEADED });
-  const context = await browser.newContext({
-    locale:       'ja-JP',
-    timezoneId:   'Asia/Tokyo',
-    storageState,
-  });
-  const page = await context.newPage();
+async function scrapeMFTransactions(page) {
+  // 今月のみ取得
+  // ※URLパラメータでの月切替はJSレンダリングのため効かないため、
+  //   デフォルト表示（今月）だけ取得する。週1+月末毎日のスケジュールで十分カバーできる。
+  const today  = new Date();
+  const year   = today.getFullYear();
+  const month  = today.getMonth() + 1;
+  const months = [{ year, month }];
 
-  try {
-    // ログイン確認
-    console.log(`[${now()}] セッション確認中...`);
-    await page.goto(`${MF_BASE}/`, { waitUntil: 'networkidle' });
-    await screenshot(page, '01_top');
+  const allRows = [];
+  for (const { year, month } of months) {
+    console.log(`[${now()}] 収支スクレイピング中: ${year}年${month}月`);
 
-    const url = page.url();
-    if (!url.includes('ssnb.x.moneyforward.com') || url.includes('login') || url.includes('sign_in')) {
-      throw new Error('セッションが切れています。`node src/login.js` を再実行してください。');
-    }
-    console.log(`[${now()}] ログイン確認OK`);
+    await page.goto(`${MF_BASE}/cf`, { waitUntil: 'networkidle' });
+    await screenshot(page, `cf_${year}_${month}`);
 
-    // 今月のみ取得
-    // ※URLパラメータでの月切替はJSレンダリングのため効かないため、
-    //   デフォルト表示（今月）だけ取得する。週1+月末毎日のスケジュールで十分カバーできる。
-    const today  = new Date();
-    const year   = today.getFullYear();
-    const month  = today.getMonth() + 1;
-    const months = [{ year, month }];
+    const rows = await page.evaluate((ym) => {
+      const table = document.getElementById('cf-detail-table');
+      if (!table) return [];
 
-    const allRows = [];
-    for (const { year, month } of months) {
-      console.log(`[${now()}] スクレイピング中: ${year}年${month}月`);
+      return Array.from(table.querySelectorAll('tbody tr')).map(tr => {
+        const tds = Array.from(tr.querySelectorAll('td'));
+        if (tds.length < 8) return null;
 
-      await page.goto(`${MF_BASE}/cf`, { waitUntil: 'networkidle' });
-      await screenshot(page, `cf_${year}_${month}`);
+        // 計算対象チェックボックス（0列目）
+        const calcCb   = tr.querySelector('td:nth-child(1) input[type=checkbox]');
+        const calcFlag = calcCb ? (calcCb.checked ? '1' : '0') : tds[0].textContent.trim();
 
-      const rows = await page.evaluate((ym) => {
-        const table = document.getElementById('cf-detail-table');
-        if (!table) return [];
+        // 振替チェックボックス（9列目）
+        const transCb   = tr.querySelector('td:nth-child(9) input[type=checkbox]');
+        const transFlag = transCb ? (transCb.checked ? '1' : '0') : tds[8]?.textContent.trim() || '0';
 
-        return Array.from(table.querySelectorAll('tbody tr')).map(tr => {
-          const tds = Array.from(tr.querySelectorAll('td'));
-          if (tds.length < 8) return null;
+        return {
+          calcFlag,
+          dateRaw:     tds[1]?.textContent.trim() || '',
+          content:     tds[2]?.textContent.trim().replace(/\s+/g, ' ') || '',
+          amountRaw:   tds[3]?.textContent.trim() || '',
+          institution: tds[4]?.textContent.trim() || '',
+          category:    tds[5]?.textContent.trim() || '',
+          subcategory: tds[6]?.textContent.trim() || '',
+          memo:        tds[7]?.textContent.trim() || '',
+          transFlag,
+          year:        ym.year,
+          month:       ym.month,
+        };
+      }).filter(Boolean);
+    }, { year, month });
 
-          // 計算対象チェックボックス（0列目）
-          const calcCb   = tr.querySelector('td:nth-child(1) input[type=checkbox]');
-          const calcFlag = calcCb ? (calcCb.checked ? '1' : '0') : tds[0].textContent.trim();
-
-          // 振替チェックボックス（9列目）
-          const transCb   = tr.querySelector('td:nth-child(9) input[type=checkbox]');
-          const transFlag = transCb ? (transCb.checked ? '1' : '0') : tds[8]?.textContent.trim() || '0';
-
-          return {
-            calcFlag,
-            dateRaw:     tds[1]?.textContent.trim() || '',
-            content:     tds[2]?.textContent.trim().replace(/\s+/g, ' ') || '',
-            amountRaw:   tds[3]?.textContent.trim() || '',
-            institution: tds[4]?.textContent.trim() || '',
-            category:    tds[5]?.textContent.trim() || '',
-            subcategory: tds[6]?.textContent.trim() || '',
-            memo:        tds[7]?.textContent.trim() || '',
-            transFlag,
-            year:        ym.year,
-            month:       ym.month,
-          };
-        }).filter(Boolean);
-      }, { year, month });
-
-      console.log(`[${now()}] ${year}年${month}月: ${rows.length}行取得`);
-      allRows.push(...rows);
-    }
-
-    return parseRows(allRows);
-
-  } finally {
-    await browser.close();
+    console.log(`[${now()}] ${year}年${month}月: ${rows.length}行取得`);
+    allRows.push(...rows);
   }
+
+  return parseRows(allRows);
+}
+
+// ============================================================
+// MoneyForward ME 資産スクレイピング（/bs ページ）
+// ============================================================
+async function scrapeMFAssets(page) {
+  console.log(`[${now()}] 資産ページ取得中...`);
+  await page.goto(`${MF_BASE}/bs`, { waitUntil: 'networkidle' });
+  await screenshot(page, 'bs_assets');
+
+  const today   = new Date();
+  const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+  const rawAssets = await page.evaluate(() => {
+    const results = [];
+
+    // MF の /bs ページでは口座ごとに行が並ぶ
+    // .bs-account-group または .account-box-row が口座単位の行
+    // ない場合は .total-box などのサマリー行にフォールバック
+
+    // 戦略1: 口座ごとの残高行（最も詳細）
+    const accountRows = document.querySelectorAll(
+      'table.bs-table tbody tr, .account-list-row, [class*="account-row"]'
+    );
+
+    if (accountRows.length > 0) {
+      accountRows.forEach(row => {
+        const cells = row.querySelectorAll('td');
+        if (cells.length < 2) return;
+
+        const name      = cells[0]?.textContent.trim().replace(/\s+/g, ' ');
+        const amountTxt = cells[cells.length - 1]?.textContent.trim();
+        if (!name || !amountTxt) return;
+
+        // 「合計」などの集計行はスキップ
+        if (name.includes('合計') || name.includes('小計')) return;
+
+        const amount = parseInt(amountTxt.replace(/[^\-\d]/g, ''), 10);
+        if (isNaN(amount)) return;
+
+        results.push({ type: name, amount });
+      });
+    }
+
+    // 戦略2: テーブルがなければ dl/dt/dd 形式やリスト形式を試みる
+    if (results.length === 0) {
+      document.querySelectorAll('.bs-total-row, .total-row, [class*="bs-item"]').forEach(el => {
+        const label  = el.querySelector('.account-name, .name, dt, .label')?.textContent.trim().replace(/\s+/g, ' ');
+        const amount = el.querySelector('.amount, .total, dd, .value')?.textContent.trim();
+        if (!label || !amount) return;
+        if (label.includes('合計') || label.includes('小計')) return;
+
+        const parsed = parseInt(amount.replace(/[^\-\d]/g, ''), 10);
+        if (!isNaN(parsed)) results.push({ type: label, amount: parsed });
+      });
+    }
+
+    // デバッグ用: ページの主要HTML構造をログ
+    const bodyPreview = document.body.innerHTML.slice(0, 3000);
+    return { results, bodyPreview };
+  });
+
+  // デバッグ: ページ構造をログ出力
+  if (DEBUG || rawAssets.results.length === 0) {
+    console.log(`[DEBUG] /bs ページHTML先頭3000文字:\n${rawAssets.bodyPreview}`);
+  }
+
+  if (rawAssets.results.length === 0) {
+    console.warn(`[WARN] 資産データが取得できませんでした。--debug フラグで構造を確認してください。`);
+    return [];
+  }
+
+  return rawAssets.results.map(r => ({
+    id:         generateId(),
+    date:       dateStr,
+    type:       r.type,
+    amount:     r.amount,
+    created_at: new Date().toISOString(),
+  }));
 }
 
 // ============================================================
@@ -381,6 +478,20 @@ async function appendRows(sheets, rows) {
   await sheets.spreadsheets.values.append({
     spreadsheetId:    SPREADSHEET_ID,
     range:            `${SHEET_NAME}!A:K`,
+    valueInputOption: 'USER_ENTERED',
+    insertDataOption: 'INSERT_ROWS',
+    requestBody:      { values },
+  });
+}
+
+async function appendAssetRows(sheets, rows) {
+  const values = rows.map(r => [
+    r.id, r.date, r.type, r.amount, r.created_at,
+  ]);
+
+  await sheets.spreadsheets.values.append({
+    spreadsheetId:    SPREADSHEET_ID,
+    range:            `${ASSETS_SHEET_NAME}!A:E`,
     valueInputOption: 'USER_ENTERED',
     insertDataOption: 'INSERT_ROWS',
     requestBody:      { values },
