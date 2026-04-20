@@ -1,11 +1,9 @@
 name: MoneyForward ME → Google Sheets
 
 on:
-  # 週1回（日曜 10:00 JST = 01:00 UTC）
+  # 毎日 10:00 JST = 01:00 UTC
   schedule:
-    - cron: '0 1 * * 0'
-  # 月末集中期間（25〜31日 毎日 10:00 JST）
-    - cron: '0 1 25-31 * *'
+    - cron: '0 1 * * *'
   # 手動実行（テスト・緊急時）
   workflow_dispatch:
 
