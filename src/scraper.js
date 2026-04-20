@@ -207,8 +207,8 @@ async function scrapeMFTransactions(page) {
         const isTargetInput = tr.querySelector('input[name="user_asset_act[is_target]"]');
         const calcFlag = isTargetInput ? isTargetInput.value : '1';
 
-        // 振替フラグ（js-switch-transfer アイコンの有無で判定）
-        const transFlag = tr.querySelector('.js-switch-transfer') ? '1' : '0';
+        // 振替フラグ（disable_transfer = 現在振替状態）
+        const transFlag = tr.querySelector('.js-switch-transfer[data-link*="disable_transfer"]') ? '1' : '0';
 
         return {
           calcFlag,
