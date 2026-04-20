@@ -337,7 +337,7 @@
   <!-- 貯蓄推移ページ -->
   <div class="page" id="page-trend">
     <div class="chart-card">
-      <div class="chart-title">貯蓄額の月次推移（直近12ヶ月）</div>
+      <div class="chart-title">月次収支バランス（直近12ヶ月）</div>
       <canvas id="trendChart"></canvas>
     </div>
     <div class="chart-card">
@@ -559,7 +559,7 @@ async function loadTrend() {
       data: {
         labels: data.labels,
         datasets: [{
-          label: '貯蓄額',
+          label: '月次収支バランス',
           data: data.saving,
           backgroundColor: data.saving.map(v => v >= 0 ? 'rgba(6,199,85,0.7)' : 'rgba(255,79,79,0.7)'),
           borderRadius: 6,
