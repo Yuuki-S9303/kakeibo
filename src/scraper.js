@@ -203,9 +203,9 @@ async function scrapeMFTransactions(page) {
         const tds = Array.from(tr.querySelectorAll('td'));
         if (tds.length < 8) return null;
 
-        // 計算対象チェックボックス（0列目）
-        const calcCb   = tr.querySelector('td:nth-child(1) input[type=checkbox]');
-        const calcFlag = calcCb ? (calcCb.checked ? '1' : '0') : tds[0].textContent.trim();
+        // 計算対象フラグ（hidden input の value で判定）
+        const isTargetInput = tr.querySelector('input[name="user_asset_act[is_target]"]');
+        const calcFlag = isTargetInput ? isTargetInput.value : '1';
 
         // 振替チェックボックス（9列目）
         const transCb   = tr.querySelector('td:nth-child(9) input[type=checkbox]');
