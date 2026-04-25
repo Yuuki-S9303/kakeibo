@@ -77,6 +77,9 @@ async function main() {
     }
     console.log(`[${now()}] ログイン確認OK`);
 
+    // ── 口座更新トリガー ────────────────────────────────────────
+    await triggerAccountUpdates(page);
+
     // ── 収支スクレイプ ──────────────────────────────────────────
     const rows = await scrapeMFTransactions(page);
     console.log(`[${now()}] 収支取得: ${rows.length}件（振替・計算対象外除く）`);
@@ -174,6 +177,79 @@ function loadStorageState() {
     'セッション情報が見つかりません。\n' +
     'まず `node src/login.js` を実行してログインしてください。'
   );
+}
+
+// ============================================================
+// MoneyForward ME 口座更新トリガー（銀行同期）
+// ============================================================
+
+// 更新する口座名（部分一致）
+const UPDATE_TARGET_ACCOUNTS = [
+  '住信SBIネット銀行',
+  '三菱UFJ銀行',
+  '楽天銀行',
+  'SBI証券',
+  'VIEW CARD',
+  '三井住友カード',
+  '楽天カード',
+];
+
+const UPDATE_TIMEOUT_MS = 3 * 60 * 1000; // 最大3分待機
+
+async function triggerAccountUpdates(page) {
+  console.log(`[${now()}] 口座更新トリガー中 (${UPDATE_TARGET_ACCOUNTS.length}口座)...`);
+  await page.goto(`${MF_BASE}/accounts`, { waitUntil: 'networkidle' });
+  await screenshot(page, '02_accounts_before_update');
+
+  // 口座行一覧取得
+  const accountRows = await page.evaluate(() =>
+    [...document.querySelectorAll('#account-table tr[id]')].map(row => ({
+      id:      row.id,
+      name:    (row.querySelector('td:first-child a')?.textContent || '').trim().replace(/\s+/g, ' '),
+      rowHtml: row.innerHTML.slice(0, 400),
+    }))
+  );
+
+  // 対象口座を名前でフィルタしてクリック
+  for (const { id, name, rowHtml } of accountRows) {
+    const isTarget = UPDATE_TARGET_ACCOUNTS.some(t => name.includes(t));
+    if (!isTarget) continue;
+
+    // [id="..."] を使う（IDが数字始まりでも有効）
+    // MFの更新フォーム: <form id="js-recorrect-form-[ID]" data-remote="true">
+    const btn = page.locator(`form[id="js-recorrect-form-${id}"] input[type="submit"]`);
+
+    if (await btn.count() > 0) {
+      await btn.click();
+      console.log(`[${now()}] 更新クリック: ${name}`);
+      await page.waitForTimeout(600);
+    } else {
+      console.warn(`[WARN] 更新ボタン未検出: ${name}`);
+      if (DEBUG) console.log(`[DEBUG] 行HTML: ${rowHtml}`);
+    }
+  }
+
+  // ローディング消滅待機
+  console.log(`[${now()}] 更新完了待機中 (最大${UPDATE_TIMEOUT_MS / 1000}秒)...`);
+  try {
+    await page.waitForFunction(
+      () => document.querySelectorAll(
+        '.loading, .js-loading, [class*="loading"], [class*="spinner"], [class*="refreshing"]'
+      ).length === 0,
+      { timeout: UPDATE_TIMEOUT_MS }
+    );
+    console.log(`[${now()}] 更新完了確認`);
+  } catch {
+    console.warn('[WARN] 更新タイムアウト。一部口座が未完了の可能性あり。スクレイプ続行。');
+  }
+
+  // 銀行側の非同期更新完了を待つ
+  const FIXED_WAIT_MS = 15 * 60 * 1000;
+  console.log(`[${now()}] 銀行データ反映待機中 (${FIXED_WAIT_MS / 60000}分)...`);
+  await page.waitForTimeout(FIXED_WAIT_MS);
+  console.log(`[${now()}] 待機完了`);
+
+  await screenshot(page, '03_accounts_after_update');
 }
 
 // ============================================================
