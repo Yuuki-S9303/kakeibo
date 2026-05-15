@@ -159,32 +159,31 @@
 <div class="section">
   <div class="section-title">📋 カテゴリ一覧</div>
 
+  <?
+    var ss = SpreadsheetApp.openById(PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID') || '1BzRyEA-sdxmD_BMcmkVIaM54Sk6guhatQP5M0jdew9s');
+    var sheet = ss.getSheetByName('categories');
+    var expense = [], income = [];
+    if (sheet && sheet.getLastRow() >= 2) {
+      var rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 4).getValues();
+      for (var i = 0; i < rows.length; i++) {
+        var name = rows[i][1], parent = rows[i][2], active = rows[i][3];
+        if (!name || active === false || String(active).toUpperCase() === 'FALSE') continue;
+        if (String(parent).trim() === '収入') income.push(name); else expense.push(name);
+      }
+    }
+  ?>
   <div class="cat-section-label">支出</div>
   <div class="categories">
-    <span class="cat-tag">食費</span>
-    <span class="cat-tag">日用品</span>
-    <span class="cat-tag">衣服</span>
-    <span class="cat-tag">美容</span>
-    <span class="cat-tag">医療費</span>
-    <span class="cat-tag">住居費</span>
-    <span class="cat-tag">交通費</span>
-    <span class="cat-tag">通信費</span>
-    <span class="cat-tag">光熱費</span>
-    <span class="cat-tag">交際費</span>
-    <span class="cat-tag">教育費</span>
-    <span class="cat-tag">家具・家電</span>
-    <span class="cat-tag">旅行・娯楽</span>
-    <span class="cat-tag">プレゼント</span>
-    <span class="cat-tag">その他</span>
+    <? for (var i = 0; i < expense.length; i++) { ?>
+      <span class="cat-tag"><?= expense[i] ?></span>
+    <? } ?>
   </div>
 
   <div class="cat-section-label">収入</div>
   <div class="categories">
-    <span class="cat-tag">給与</span>
-    <span class="cat-tag">賞与</span>
-    <span class="cat-tag">副業</span>
-    <span class="cat-tag">投資収入</span>
-    <span class="cat-tag">臨時収入</span>
+    <? for (var i = 0; i < income.length; i++) { ?>
+      <span class="cat-tag"><?= income[i] ?></span>
+    <? } ?>
   </div>
 </div>
 
