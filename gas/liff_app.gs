@@ -33,7 +33,8 @@ function doGet(e) {
 
   // 使い方ページ
   if (page === 'help') {
-    return HtmlService.createHtmlOutputFromFile('help')
+    return HtmlService.createTemplateFromFile('help')
+      .evaluate()
       .setTitle('使い方')
       .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
   }
