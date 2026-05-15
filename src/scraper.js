@@ -66,13 +66,13 @@ async function main() {
   const page = await context.newPage();
 
   try {
-    // ログイン確認
+    // ログイン確認（認証必須ページで検証）
     console.log(`[${now()}] セッション確認中...`);
-    await page.goto(`${MF_BASE}/`, { waitUntil: 'networkidle' });
-    await screenshot(page, '01_top');
+    await page.goto(`${MF_BASE}/cf`, { waitUntil: 'networkidle' });
+    await screenshot(page, '01_cf_check');
 
-    const url = page.url();
-    if (!url.includes('ssnb.x.moneyforward.com') || url.includes('login') || url.includes('sign_in')) {
+    const loginForm = await page.$('form[action="/session"]');
+    if (loginForm) {
       throw new Error('セッションが切れています。`node src/login.js` を再実行してください。');
     }
     console.log(`[${now()}] ログイン確認OK`);
@@ -668,3 +668,4 @@ main().catch(err => {
   console.error(`[ERROR] ${err.message}`);
   process.exit(1);
 });
+
