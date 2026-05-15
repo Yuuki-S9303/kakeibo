@@ -345,9 +345,10 @@ async function scrapeMFAssets(page) {
       if (!name || !amountTxt) return;
       if (EXCLUDED_ACCOUNTS.includes(name)) return;
 
-      // SBI証券の詳細ページパスを記録
-      if (name === 'SBI証券' && nameEl.getAttribute('href')) {
-        sbiDetailPath = nameEl.getAttribute('href');
+      // SBI証券は詳細ページで口座別に取得するためここではスキップ
+      if (name === 'SBI証券') {
+        if (nameEl.getAttribute('href')) sbiDetailPath = nameEl.getAttribute('href');
+        return;
       }
 
       const amount = parseInt(amountTxt.replace(/[^\-\d]/g, ''), 10);
@@ -379,8 +380,20 @@ async function scrapeMFAssets(page) {
     created_at: new Date().toISOString(),
   }));
 
-  // SBI証券の詳細ページから元本を取得
+  // SBI証券: 詳細ページから新NISA成長投資枠を除いて取得
   if (rawAssets.sbiDetailPath) {
+    const sbiAmount = await scrapeSBIDetail(page, rawAssets.sbiDetailPath);
+    if (sbiAmount !== null) {
+      assetRows.push({
+        id:         generateId(),
+        date:       dateStr,
+        type:       'SBI証券',
+        amount:     sbiAmount,
+        created_at: new Date().toISOString(),
+      });
+      console.log(`[${now()}] SBI証券（新NISA成長投資枠除く）: ${sbiAmount.toLocaleString()}円`);
+    }
+
     const motokin = await scrapeSBIMotoken(page, rawAssets.sbiDetailPath, dateStr);
     if (motokin !== null) {
       assetRows.push({
@@ -395,6 +408,57 @@ async function scrapeMFAssets(page) {
   }
 
   return assetRows;
+}
+
+// ============================================================
+// SBI証券詳細ページから新NISA成長投資枠を除いた残高合計を取得
+// ============================================================
+const SBI_EXCLUDE_TYPES = ['新NISA成長投資枠'];
+
+async function scrapeSBIDetail(page, detailPath) {
+  const url = detailPath.startsWith('http') ? detailPath : `${MF_BASE}${detailPath}`;
+  console.log(`[${now()}] SBI証券詳細ページ取得中...`);
+  await page.goto(url, { waitUntil: 'networkidle' });
+  await screenshot(page, 'sbi_detail');
+
+  const result = await page.evaluate((excludeTypes) => {
+    // SBI証券詳細ページのテーブル構造:
+    //   列: 名称 | 種類 | 番号 | 残高
+    const table = document.querySelector('table');
+    if (!table) return { total: null, debug: document.body.innerHTML.slice(0, 2000) };
+
+    let total = 0;
+    let rowCount = 0;
+
+    table.querySelectorAll('tbody tr').forEach(row => {
+      const cells = Array.from(row.querySelectorAll('td'));
+      if (cells.length < 2) return;
+
+      const typeText   = cells[1]?.textContent.trim() || '';
+      const amountText = cells[cells.length - 1]?.textContent.trim() || '';
+
+      if (excludeTypes.some(t => typeText.includes(t))) return;
+      if (!amountText || amountText === '-') return;
+
+      const amount = parseInt(amountText.replace(/[^\-\d]/g, ''), 10);
+      if (isNaN(amount)) return;
+
+      total += amount;
+      rowCount++;
+    });
+
+    return { total: rowCount > 0 ? total : null, rowCount };
+  }, SBI_EXCLUDE_TYPES);
+
+  if (result.debug) {
+    console.log(`[DEBUG] SBI詳細ページHTML: ${result.debug}`);
+    return null;
+  }
+
+  if (result.total === null) {
+    console.warn('[WARN] SBI証券詳細データが取得できませんでした。');
+  }
+  return result.total;
 }
 
 // ============================================================
