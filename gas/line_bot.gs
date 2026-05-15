@@ -123,24 +123,75 @@ function handleTextMessage(replyToken, userId, text) {
   replyText(replyToken, replies.join('\n─────────────\n'));
 }
 
+// 収入カテゴリのうち送信者（夫/妻）を付記するもの
+const INCOME_WITH_PERSON_KEYWORDS = ['給料', '給与', '賞与', '副業'];
+
+/** categoriesシートからカテゴリを動的ロード */
+function loadCategories() {
+  try {
+    const ss    = openSpreadsheet();
+    const sheet = ss.getSheetByName('categories');
+    if (!sheet) return getDefaultCategories();
+
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return getDefaultCategories();
+
+    // A:id  B:name  C:parent_category  D:is_active
+    const data = sheet.getRange(2, 1, lastRow - 1, 4).getValues();
+
+    const expense             = [];
+    const incomeWithPerson    = [];
+    const incomeWithoutPerson = [];
+
+    for (const [, name, parentCategory, isActive] of data) {
+      const nameStr = String(name || '').trim();
+      if (!nameStr) continue;
+      if (isActive === false || String(isActive).toUpperCase() === 'FALSE') continue;
+
+      if (String(parentCategory).trim() === '収入') {
+        if (INCOME_WITH_PERSON_KEYWORDS.includes(nameStr)) {
+          incomeWithPerson.push(nameStr);
+        } else {
+          incomeWithoutPerson.push(nameStr);
+        }
+      } else {
+        expense.push(nameStr);
+      }
+    }
+
+    return { expense, incomeWithPerson, incomeWithoutPerson };
+  } catch (err) {
+    Logger.log('loadCategories error: ' + err.message);
+    return getDefaultCategories();
+  }
+}
+
+function getDefaultCategories() {
+  return {
+    expense:              ['食費', '日用品', '衣服', '美容', '医療費', '住居費', '交通費', '通信費', '光熱費', '交際費', '教育費', '家具・家電', '旅行・娯楽', 'プレゼント', 'その他'],
+    incomeWithPerson:     ['給料', '給与', '賞与', '副業'],
+    incomeWithoutPerson:  ['臨時収入', '補助金', '還付金', '投資収入'],
+  };
+}
+
+function escapeRegExp(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /** 1行を解析してDB書き込み＋返信文字列を返す。認識できなければ null */
 function processLine(userId, text) {
-  const INCOME_CATEGORIES_WITH_PERSON    = ['給与', '賞与', '副業'];
-  const INCOME_CATEGORIES_WITHOUT_PERSON = ['臨時収入', '補助金', '還付金', '投資収入'];
-  const ALL_INCOME_CATEGORIES = [...INCOME_CATEGORIES_WITH_PERSON, ...INCOME_CATEGORIES_WITHOUT_PERSON];
-
-  const EXPENSE_CATEGORIES = [
-    '食費', '日用品', '衣服', '美容', '医療費', '住居費',
-    '交通費', '通信費', '光熱費', '交際費', '教育費',
-    '家具・家電', '旅行・娯楽', 'プレゼント', 'その他',
-  ];
+  const cats = loadCategories();
+  const INCOME_CATEGORIES_WITH_PERSON    = cats.incomeWithPerson;
+  const INCOME_CATEGORIES_WITHOUT_PERSON = cats.incomeWithoutPerson;
+  const ALL_INCOME_CATEGORIES            = [...INCOME_CATEGORIES_WITH_PERSON, ...INCOME_CATEGORIES_WITHOUT_PERSON];
+  const EXPENSE_CATEGORIES               = cats.expense;
 
   // 1. 残高記録: 「残高 ¥8000」「残高8000」「balance 8000」
   const balanceMatch = text.match(/^(?:残高|balance)\s*[¥￥]?\s*([\d,]+)/i);
   if (balanceMatch) return handleCashBalance(parseAmount(balanceMatch[1]));
 
   // 2. 収入記録: 「給与 400000」「給与 400000 残業代」
-  const incomeCategoryPattern = new RegExp(`^(${ALL_INCOME_CATEGORIES.join('|')})\\s+([\\d,]+)\\s*(.*)`, 'i');
+  const incomeCategoryPattern = new RegExp(`^(${ALL_INCOME_CATEGORIES.map(escapeRegExp).join('|')})\\s+([\\d,]+)\\s*(.*)`, 'i');
   const incomeCategoryMatch = text.match(incomeCategoryPattern);
   if (incomeCategoryMatch) {
     const categoryName = incomeCategoryMatch[1];
@@ -162,7 +213,7 @@ function processLine(userId, text) {
   if (assetMatch) return handleAssetRecord(assetMatch[1], parseAmount(assetMatch[2]));
 
   // 4. カテゴリ指定支出: 「食費 1500 ランチ」「交通費 280」
-  const expenseCategoryPattern = new RegExp(`^(${EXPENSE_CATEGORIES.join('|')})\\s+([\\d,]+)\\s*(.*)`, 'i');
+  const expenseCategoryPattern = new RegExp(`^(${EXPENSE_CATEGORIES.map(escapeRegExp).join('|')})\\s+([\\d,]+)\\s*(.*)`, 'i');
   const expenseCategoryMatch = text.match(expenseCategoryPattern);
   if (expenseCategoryMatch) {
     return handleManualExpense(
@@ -655,3 +706,4 @@ function testDoPost() {
   const result = doPost(mockEvent);
   Logger.log('result: ' + result.getContent());
 }
+
